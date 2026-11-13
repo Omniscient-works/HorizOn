@@ -80,7 +80,7 @@ private const val SKY_FADE_MS = 3_000f
 
 /**
  * Time-synced lyrics in the Echo style (Lyrics_plan.md, section 4): each lyric line becomes its own
- * small zigzag shape; a line that comes back (a chorus) lights up the same shape in the same place;
+ * small zigzag shape; a line that comes back (a chorus) redraws its shape somewhere new, with a thread back;
  * a word sung earlier in another line gets a dotted thread back to it; the current word grows bolder
  * the longer it is held. Very rarely ([ConstellationEgg]) the words build a real constellation,
  * which only shows itself once complete. Follows [nowPlaying]'s position, so pause, seek and skip
@@ -110,7 +110,7 @@ private class Node(val word: TimedWord, val idx: Int, val at: Offset, val born: 
     val layouts = HashMap<Int, TextLayoutResult>(4)
 }
 
-private class Shape(val line: Int, val pts: List<Offset>, val centre: Offset, val retrace: Boolean, val offset: Int) {
+private class Shape(val line: Int, val key: String, val pts: List<Offset>, val centre: Offset, val retrace: Boolean, val offset: Int) {
     val nodes = ArrayList<Node>()
     var alpha = 1f
     var shrink = 1f
@@ -129,13 +129,14 @@ private class Sky(val c: Constellation, val from: Int, val pos: List<Offset>, va
 
 /** The song's Echo shapes and state, kept for as long as the lyrics are on screen. */
 internal class EchoEngine(private val words: List<TimedWord>) {
-    private val random = Random(words.size * 31 + words.firstOrNull()?.text.hashCode())
+    /** Fresh every time, so a song never lays out the same way twice. */
+    private val random = Random(System.nanoTime())
     private val wordInLine = IntArray(words.size)
     private val lineSize = HashMap<Int, Int>()
     private val lineKey = HashMap<Int, String>()
     private val info: Map<Int, LineInfo>
 
-    /** Every line's shape, by its words, so a returning line finds its old place. */
+    /** Every line's shape, by its words, so a returning line can be recognised by its outline. */
     private val layouts = HashMap<String, List<Offset>>()
     private val shapes = ArrayList<Shape>()
     private val threads = ArrayList<Thread>()
@@ -264,19 +265,23 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         // Words left over in the line that finished a constellation make a small shape of their own.
         val tailFrom = sky?.let { s -> if (words[s.from + s.c.starCount - 1].line == w.line) wordInLine[s.from + s.c.starCount] else 0 } ?: 0
         var shape = shapes.lastOrNull()
+        var earlier: Shape? = null
         if (shape == null || shape.line != w.line) {
             val key = if (tailFrom > 0) "tail:${w.line}" else lineKey.getValue(w.line)
-            val retrace = layouts.containsKey(key)
-            val pts = layouts.getOrPut(key) { layoutLine(lineSize.getValue(w.line) - tailFrom) }
+            val template = layouts[key]
+            val retrace = template != null
+            // A returning line keeps its outline but lands somewhere new.
+            val pts = if (template != null) moveShape(template) else layoutLine(lineSize.getValue(w.line) - tailFrom).also { layouts[key] = it }
             val centre = pts.fold(Offset.Zero) { acc, p -> acc + p / pts.size.toFloat() }
-            // A returning line takes over its earlier copy's place.
-            shapes.removeAll { it.pts === pts }
-            shape = Shape(w.line, pts, centre, retrace, tailFrom)
+            earlier = if (retrace) shapes.lastOrNull { it.key == key } else null
+            shape = Shape(w.line, key, pts, centre, retrace, tailFrom)
             shapes += shape
         }
         val at = shape.pts[(j - shape.offset).coerceIn(0, shape.pts.size - 1)]
         val node = Node(w, idx, at, now)
         shape.nodes += node
+        // A returning line: a thread back to where it was last sung, if that copy is still showing.
+        earlier?.nodes?.firstOrNull()?.let { threads += Thread(it, earlier, node, shape, now) }
         // Echo thread: the same word, sung earlier in a different line that is still showing.
         val word = norm(w.text)
         if (!shape.retrace && word.length >= 3) {
@@ -308,9 +313,8 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         val top = height * 0.27f
         val bottom = height * 0.84f
         val skyPts = sky?.pos.orEmpty()
-        val others = layouts.values.flatten() + skyPts
-        val centres = layouts.values.map { pts -> pts.fold(Offset.Zero) { a, p -> a + p / pts.size.toFloat() } } +
-            listOfNotNull(sky?.centre)
+        val others = shapes.flatMap { it.pts } + skyPts
+        val centres = shapes.map { it.centre } + listOfNotNull(sky?.centre)
         var origin = Offset(width / 2, height / 2)
         var best = -1f
         repeat(30) {
@@ -350,6 +354,35 @@ internal class EchoEngine(private val words: List<TimedWord>) {
             sign = -sign
         }
         return pts
+    }
+
+    /** Moves a remembered shape to a fresh spot, as far as it can from what is showing and from where it was. */
+    private fun moveShape(template: List<Offset>): List<Offset> {
+        val left = width * 0.09f
+        val right = width * 0.83f
+        val top = height * 0.27f
+        val bottom = height * 0.84f
+        val minX = template.minOf { it.x }
+        val maxX = template.maxOf { it.x }
+        val minY = template.minOf { it.y }
+        val maxY = template.maxOf { it.y }
+        val home = template.fold(Offset.Zero) { a, p -> a + p / template.size.toFloat() }
+        val centres = shapes.map { it.centre } + listOfNotNull(sky?.centre) + home
+        fun range(lo: Float, hi: Float, a: Float, b: Float) = if (b - a > hi - lo) Pair((lo + hi - a - b) / 2, (lo + hi - a - b) / 2) else Pair(lo - a, hi - b)
+        val (dx0, dx1) = range(left, right, minX, maxX)
+        val (dy0, dy1) = range(top, bottom, minY, maxY)
+        var shift = Offset.Zero
+        var best = -1f
+        repeat(30) {
+            val d = Offset(dx0 + random.nextFloat() * (dx1 - dx0), dy0 + random.nextFloat() * (dy1 - dy0))
+            val c = home + d
+            val score = centres.minOf { hypot(it.x - c.x, (it.y - c.y) * 1.3f) }
+            if (score > best) {
+                best = score
+                shift = d
+            }
+        }
+        return template.map { it + shift }
     }
 
     fun draw(scope: DrawScope, now: Long, accent: Color, measurer: TextMeasurer, reduceMotion: Boolean) {
