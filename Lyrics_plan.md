@@ -80,7 +80,8 @@ A Compose `Canvas` in `ui/lyrics/LyricsWeb.kt`, driven by `withFrameNanos` and o
 ### 4.1 Echo (0.4.0)
 The web was replaced by the Echo style, prototyped in the mockup:
 - Each lyric line is laid out as its own small zigzag shape, placed away from every shape drawn so far.
-- A line that comes back (a chorus) reuses its shape: the old outline appears faint and dotted, and the words trace it, glowing.
+- A line that comes back (a chorus) reuses its shape but in a new spot, away from where it was: the outline appears faint and dotted, the words trace it, glowing, and a dotted thread links it to the earlier copy if that is still showing.
+- Layouts are random on every play, so the same song never lays out the same way twice.
 - A word sung earlier in a different line that is still showing gets a dotted thread back to it, and the earlier word lights up briefly.
 - The current word's weight grows from light to bold over the time it is held; it arrives with a ring pulse and a spark runs along the line to it.
 - Finished lines shrink slightly toward their centre and fade over 16 s; the view drifts gently toward the current word.
