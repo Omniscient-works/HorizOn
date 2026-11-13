@@ -86,9 +86,6 @@ The web was replaced by the Echo style, prototyped in the mockup:
 - Finished lines shrink slightly toward their centre and fade over 16 s; the view drifts gently toward the current word.
 - Kept from 0.3.1: the visualizer in intros, long breaks and the outro, held-line finales and chorus emphasis.
 
-### 4.2 The rare constellation
-About one song in 500 (`ConstellationEgg`), the words land on the stars of a real constellation (14 figures, from d3-celestial's data, BSD-3-Clause). While it builds, the view stays zoomed in (2.3×) on the newest word, so it reads as ordinary lyrics. When the last star lights, the view pulls back over 1.8 s, the lines glow, stars take their real brightness, and the name appears in English and Hindi. The lyrics carry on as a caption for 6 s, then Echo resumes. Debug builds can force it: `adb shell am start -n dev.horizon/.debug.DemoMediaActivity --ez constellation true`.
-
 ## 5. Lyrics data (online build)
 
 ### 5.1 Lookup
