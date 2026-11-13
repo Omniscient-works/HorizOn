@@ -87,6 +87,13 @@ private const val SCRUB_VISIBLE_MS = 3_500L
 private const val STATUS_VISIBLE_MS = 5_000L
 private const val STATUS_FADE_MS = 1_200
 
+/**
+ * After a track change, how long to wait for the player's new position before trusting what we
+ * have, and how far before the change a position report may be and still count as the new song's.
+ */
+private const val POSITION_SETTLE_MS = 1_500L
+private const val POSITION_FRESH_SLACK_MS = 400L
+
 /** A shorter intro than this gets no countdown; it would only flash. */
 private const val INTRO_COUNTDOWN_MIN_MS = 4_000L
 
@@ -138,6 +145,17 @@ fun LyricsPage(
             delay(250)
         }
     }
+    // When the track changes, players send the new title a moment before the new position, so for
+    // that moment the old song's position (say 3:20) would be applied to the new song's lyrics and
+    // flash them up. Trust the position only once the player has reported it since the change, or
+    // after a short wait for players that never resend it.
+    // The song that was playing when the page opened is trusted straight away; only a change seen
+    // while the page is up has to wait.
+    val firstRequest = remember { request }
+    val songSeenAt = remember(request) { SystemClock.elapsedRealtime() }
+    val positionTrusted = request == firstRequest ||
+        nowPlaying.positionUpdatedAt >= songSeenAt - POSITION_FRESH_SLACK_MS ||
+        maxOf(tick, SystemClock.elapsedRealtime()) - songSeenAt >= POSITION_SETTLE_MS
     val wait = remember(words, nowPlaying, tick) { words.waitAt(nowPlaying.positionAt(SystemClock.elapsedRealtime())) }
 
     var taps by remember { mutableIntStateOf(0) }
@@ -162,7 +180,7 @@ fun LyricsPage(
         // Lyrics and the visualizer hand over softly: the incoming one rises out of a slight zoom
         // while the outgoing one drifts forward and fades.
         AnimatedContent(
-            synced?.lyrics?.takeIf { wait == null },
+            synced?.lyrics?.takeIf { wait == null && positionTrusted },
             transitionSpec = {
                 (fadeIn(tween(700, delayMillis = 120)) + scaleIn(tween(900, easing = FastOutSlowInEasing), initialScale = 0.94f)) togetherWith
                     (fadeOut(tween(450)) + scaleOut(tween(650, easing = FastOutSlowInEasing), targetScale = 1.05f))
@@ -201,7 +219,7 @@ fun LyricsPage(
                 )
             }
 
-            val introLeft = wait?.takeIf { it.kind == LyricsWait.Kind.Intro }?.untilNextMs?.takeIf { it > INTRO_COUNTDOWN_MIN_MS }
+            val introLeft = wait?.takeIf { positionTrusted && it.kind == LyricsWait.Kind.Intro }?.untilNextMs?.takeIf { it > INTRO_COUNTDOWN_MIN_MS }
             val status = when {
                 showLyricsPrompt -> null
                 introLeft != null -> "Lyrics in ${formatTrackTime(introLeft + 999)}"
