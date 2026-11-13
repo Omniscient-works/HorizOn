@@ -48,11 +48,11 @@ import kotlin.math.pow
 import kotlin.math.sin
 import kotlin.random.Random
 
-/** How long the line to a new word takes to draw. */
-private const val EDGE_DRAW_MS = 420f
+/** How long the line to a new word takes to draw: quick, so the word lands on its beat. */
+private const val EDGE_DRAW_MS = 260f
 
-/** A new word fades in over this long. */
-private const val APPEAR_MS = 280f
+/** A new word fades in over this long: short, so it reads as arriving on time, not late. */
+private const val APPEAR_MS = 110f
 
 /** The ring that marks a new word's arrival. */
 private const val PULSE_MS = 900f
@@ -110,6 +110,7 @@ internal fun LyricsWeb(engine: EchoEngine, nowPlaying: NowPlaying, accent: Color
     }
     // Held endings ripple through the lyrics like a drop on glass (Android 13+; older phones get rings).
     val glass = remember { if (reduceMotion) null else GlassRipple.createOrNull() }
+    engine.glassRipple = glass != null
     val rippleLayer = if (glass == null) {
         Modifier
     } else {
@@ -175,6 +176,9 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
     private var spawned = 0
     private var lastIdx = -1
     private var cam = Offset.Zero
+
+    /** Whether the glass shader draws the ripple; if not, plain rings stand in for it. */
+    var glassRipple = false
 
     /** The ripple from a held ending, while it spreads; read by the glass effect each frame. */
     var ripple: Ripple? = null
@@ -588,7 +592,8 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
         if (cur != null && rippleK in 0f..1f && rippleK < 1f && !reduceMotion) {
             val centre = at(latest, cur)
             ripple = Ripple(centre + cam, rippleK, (if (chorus) 1.25f else 1f) * fade)
-            for (k in 0 until 3) {
+            // Rings only where there's no glass: on an OLED screen they'd light up a wide circle of black.
+            if (!glassRipple) for (k in 0 until 3) {
                 val f = (rippleK * 1.15f - k * 0.16f).coerceIn(0f, 1f)
                 if (f <= 0f || f >= 1f) continue
                 val eased = ease(f)

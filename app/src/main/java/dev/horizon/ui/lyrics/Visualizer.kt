@@ -22,22 +22,24 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.rotate
+import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.min
+import androidx.palette.graphics.Palette
 import dev.horizon.media.NowPlaying
 import dev.horizon.ui.artOutline
 import dev.horizon.ui.theme.Paper
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
@@ -85,6 +87,56 @@ private fun Color.shiftHue(degrees: Float, lighten: Float = 0f): Color {
     return Color(android.graphics.Color.HSVToColor(hsv))
 }
 
+/** Colour [c] made bright enough to read as a star on black, keeping its hue and saturation. */
+private fun visible(c: Color): Color {
+    val hsv = FloatArray(3)
+    android.graphics.Color.colorToHSV(c.toArgb(), hsv)
+    hsv[2] = hsv[2].coerceAtLeast(0.62f)
+    return Color(android.graphics.Color.HSVToColor(hsv))
+}
+
+/** Whether two colours are close enough to count as one. */
+private fun near(a: Color, b: Color): Boolean {
+    val dr = a.red - b.red
+    val dg = a.green - b.green
+    val db = a.blue - b.blue
+    return dr * dr + dg * dg + db * db < 0.02f
+}
+
+/**
+ * The cover's main colours, most common first, near-duplicates dropped: what the galaxy is made of.
+ * Null until worked out (off the main thread), or when there's no cover.
+ */
+@Composable
+private fun rememberCoverColours(art: Bitmap?): List<Color>? {
+    var colours by remember { mutableStateOf<List<Color>?>(null) }
+    LaunchedEffect(art) {
+        colours = if (art == null) {
+            null
+        } else {
+            withContext(Dispatchers.Default) {
+                val distinct = ArrayList<Color>()
+                Palette.from(art).maximumColorCount(16).generate().swatches
+                    .sortedByDescending { it.population }
+                    .forEach { sw ->
+                        val c = visible(Color(sw.rgb))
+                        if (distinct.none { near(it, c) }) distinct += c
+                    }
+                distinct.take(4).takeIf { it.isNotEmpty() }
+            }
+        }
+    }
+    return colours
+}
+
+/** Core to rim from the cover's colours: a pale core from the lightest, then the colours themselves. */
+private fun paletteFromCover(cover: List<Color>): List<Color> {
+    val base = cover.first()
+    val lightest = cover.maxBy { it.red + it.green + it.blue }
+    val rest = cover + listOf(base.shiftHue(-24f, 0.25f), base.shiftHue(34f, 0.5f), base.shiftHue(12f, 0.3f))
+    return listOf(lightest.shiftHue(0f, 0.8f)) + rest.take(4)
+}
+
 private fun paletteOf(accent: Color) =
     listOf(accent.shiftHue(10f, 0.85f), accent.shiftHue(0f, 0.45f), accent, accent.shiftHue(-24f, 0.25f), accent.shiftHue(34f, 0.5f))
 
@@ -116,7 +168,9 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
     }
     // A song change whirls the old galaxy into the core and blooms the new one out. We blend from
     // the palette we're settled in, and when the change began, and read a 0..1 progress each frame.
-    val newPalette = remember(accent) { paletteOf(accent) }
+    // The cover's own colours when we have them; the single accent until then (or with no cover).
+    val cover = rememberCoverColours(nowPlaying.art)
+    val newPalette = remember(accent, cover) { cover?.let(::paletteFromCover) ?: paletteOf(accent) }
     var fromPalette by remember { mutableStateOf(newPalette) }
     var swapAt by remember { mutableLongStateOf(-1L) }
     var firstSong by remember { mutableStateOf(true) }
@@ -173,7 +227,7 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val sw = swap(now)
             // The whirl: spin races up and eases out; the disc collapses toward the core at the
             // half-way point, where the colours cross over, then blooms back out.
-            val whirl = sin(sw * PI.toFloat()).pow(0.6f)
+            val whirl = whirlOf(sw)
             val extraSpin = whirl * 5.5f
             val discScale = 1f - whirl * 0.9f
             val pal = lerpPalette(fromPalette, newPalette, smoothstep(0.42f, 0.62f, sw))
@@ -197,7 +251,7 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
                     if (frame < 0L) return@graphicsLayer
                     val now = SystemClock.elapsedRealtime()
                     val sw = swap(now)
-                    val whirl = sin(sw * PI.toFloat()).toFloat().pow(0.6f)
+                    val whirl = whirlOf(sw)
                     // The planet shrinks into the core and spins with the galaxy, then grows back.
                     val s = (1f + pulse() * 0.03f) * (1f - whirl * 0.92f)
                     scaleX = s
@@ -212,7 +266,7 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val now = SystemClock.elapsedRealtime()
             val t = track.positionAt(now) / 1000f + now / 1000f * 0.03f
             val sw = swap(now)
-            val whirl = sin(sw * PI.toFloat()).pow(0.6f)
+            val whirl = whirlOf(sw)
             val pal = lerpPalette(fromPalette, newPalette, smoothstep(0.42f, 0.62f, sw))
             drawGalaxy(arms, nebulae, pal, Offset(size.width / 2, size.height / 2), coverSize.toPx(), t, pulse(), whirl * 5.5f, 1f - whirl * 0.9f, back = false)
             // The planet's atmosphere: a thin rim of light.
@@ -221,6 +275,13 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
         }
     }
 }
+
+/**
+ * How far into the whirl a song change is (0 settled .. 1 at the crossover) for progress [sw].
+ * sin(PI) comes out a hair below zero in floats, and a negative number to a fractional power is NaN,
+ * which once drew the galaxy at a NaN size and made it vanish after a change; so clamp first.
+ */
+private fun whirlOf(sw: Float): Float = sin(sw * PI.toFloat()).coerceAtLeast(0f).pow(0.6f)
 
 /** Blends 0 below [from], 1 above [to], smoothly between. */
 private fun smoothstep(from: Float, to: Float, x: Float): Float {
@@ -293,21 +354,27 @@ private fun DrawScope.drawGalaxy(
         val depth = if (back) 0.65f else 1f
         val twinkle = 0.6f + 0.4f * sin(t * 1.7f + s.phase)
         val alpha = (0.85f - 0.45f * s.r) * twinkle * depth * (if (s.loose) 0.45f else 1f) + 0.3f * beat * (1f - s.r)
-        drawCircle(palette[s.band].copy(alpha = alpha.coerceIn(0f, 1f)), s.size * density * (0.8f + 0.2f * depth) * (1f + 0.25f * beat), p)
+        // Each star drifts slowly between its colour and the next, so the galaxy's colours move.
+        val drift = 0.5f + 0.5f * sin(t * 0.08f + s.phase * 1.3f)
+        val colour = lerp(palette[s.band], palette[(s.band + 1).coerceAtMost(palette.size - 1)], drift * 0.7f)
+        drawCircle(colour.copy(alpha = alpha.coerceIn(0f, 1f)), s.size * density * (0.8f + 0.2f * depth) * (1f + 0.25f * beat), p)
     }
-    // A faint dusty glow along the disc, and a darker dust lane threading through an arm.
+    // A faint glow along the disc. Drawn as a circle squashed by the tilt, so the gradient itself is
+    // elliptical and fades to true black at the edge all round (a circular gradient in an oval left
+    // a visible rim top and bottom). Kept faint: on an OLED screen every lit pixel counts.
     if (back) {
-        val glow = radius * 0.95f
-        drawOval(
-            Brush.radialGradient(listOf(palette[2].copy(alpha = 0.10f + 0.06f * beat), Color.Transparent), centre, glow),
-            topLeft = Offset(centre.x - glow, centre.y - glow * TILT),
-            size = Size(glow * 2, glow * 2 * TILT),
-        )
-        rotate(degrees = (spin * 18f), pivot = centre) {
-            drawOval(
-                Brush.radialGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.22f), Color.Transparent), centre, glow * 0.8f),
-                topLeft = Offset(centre.x - glow * 0.8f, centre.y - 3f * density),
-                size = Size(glow * 1.6f, 6f * density),
+        val glow = radius * 0.9f
+        scale(scaleX = 1f, scaleY = TILT, pivot = centre) {
+            drawCircle(
+                Brush.radialGradient(
+                    0f to palette[2].copy(alpha = 0.07f + 0.04f * beat),
+                    0.45f to palette[2].copy(alpha = 0.03f),
+                    1f to Color.Transparent,
+                    center = centre,
+                    radius = glow,
+                ),
+                glow,
+                centre,
             )
         }
     }

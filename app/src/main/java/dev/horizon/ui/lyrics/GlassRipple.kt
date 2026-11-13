@@ -53,7 +53,8 @@ half4 main(float2 p) {
     float4 c = float4(cr.r, cg.g, cb.b, max(cr.a, max(cg.a, cb.a)));
     // Light from the upper left catches the side of each crest that faces it.
     float facing = max(dot(-dir, normalize(float2(-0.6, -0.8))) * slope * 40.0 * px, 0.0);
-    float shine = pow(min(facing, 1.0), 6.0) * 0.08;
+    // Only the words catch the light: on an OLED screen, empty black stays black.
+    float shine = pow(min(facing, 1.0), 6.0) * 0.12 * c.a;
     return half4(float4(c.rgb + float3(shine), min(1.0, c.a + shine)));
 }
 """

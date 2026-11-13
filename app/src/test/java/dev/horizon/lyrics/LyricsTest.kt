@@ -41,17 +41,36 @@ class LrcParserTest {
 class TimedWordsTest {
     private val lyrics = LrcParser.parse("[00:10.00]a b c d\n[00:14.00]e\n[00:30.00]f g")
 
-    @Test fun `words are spread across their line`() {
+    @Test fun `words are spread across their line at the song's pace`() {
         val words = lyrics.timedWords()
-        // 4 s to the next line, words fill 85% of it: 0, 850, 1700, 2550 ms in.
-        assertEquals(listOf(10_000L, 10_850L, 11_700L, 12_550L), words.take(4).map { it.timeMs })
+        // Four one-syllable words, evenly weighted, at the fastest-allowed pace (420 ms per unit,
+        // times 1.15 slack): 652 ms apart, finishing well before the next line at 14 s.
+        assertEquals(listOf(10_000L, 10_652L, 11_304L, 11_956L), words.take(4).map { it.timeMs })
     }
 
-    @Test fun `long gaps are not stretched`() {
+    @Test fun `a line followed by a pause is not drawn out across it`() {
         val words = lyrics.timedWords()
-        // "f g" is the last line, so it gets at most 6 s.
+        // "f g" is the last line; it's sung at the song's pace, not spread over the 6 s cap.
         assertEquals(30_000L, words[5].timeMs)
-        assertEquals(30_000L + 2_550L, words[6].timeMs)
+        assertEquals(30_652L, words[6].timeMs)
+    }
+
+    @Test fun `longer words take longer to sing`() {
+        val ws = LrcParser.parse("[00:00.00]a beautiful day a b c\n[00:03.00]x y z w v u\n[00:06.00]end").timedWords()
+        val a = ws[0].timeMs
+        val beautiful = ws[1].timeMs
+        val day = ws[2].timeMs
+        // "beautiful" (3 syllables) holds longer than "a" (1) before the next word.
+        assertTrue(day - beautiful > beautiful - a)
+    }
+
+    @Test fun `a fast song keeps its pace on a line before a pause`() {
+        // Densely packed lines set a quick pace; the line before the long gap keeps it.
+        val ws = LrcParser.parse(
+            "[00:00.00]one two three four\n[00:01.60]five six seven eight\n[00:03.20]nine ten eleven twelve\n[00:20.00]end",
+        ).timedWords()
+        val lastLine = ws.filter { it.line == 2 }
+        assertTrue(lastLine.last().timeMs - lastLine.first().timeMs < 2_000)
     }
 
     @Test fun `count of sung words at a position`() {
@@ -78,7 +97,7 @@ class TimedWordsTest {
 
     @Test fun `the outro starts once the last line has been read`() {
         val words = lyrics.timedWords()
-        // Last word "g" at 32.55 s.
+        // Last word "g" at 30.65 s.
         assertNull(words.waitAt(35_000))
         assertEquals(LyricsWait(LyricsWait.Kind.Outro, null), words.waitAt(39_000))
     }
@@ -122,4 +141,24 @@ class TitleCleanerTest {
         assertEquals(SongName("Hello - Live", "Adele"), TitleCleaner.clean("Hello - Live", "Adele"))
 
     @Test fun `no artist stays no artist`() = assertNull(TitleCleaner.clean("Song", null).artist)
+}
+
+class SyllablesTest {
+    @Test fun `vowel groups count syllables`() {
+        assertEquals(1, syllables("a"))
+        assertEquals(1, syllables("Coast,"))
+        assertEquals(2, syllables("sayin'"))
+        assertEquals(3, syllables("beautiful"))
+        assertEquals(1, syllables("make")) // silent e
+        assertEquals(2, syllables("little")) // but not in "-le"
+        assertEquals(1, syllables("they"))
+        assertEquals(1, syllables("you"))
+        assertEquals(1, syllables("my"))
+    }
+
+    @Test fun `other scripts`() {
+        assertEquals(2, syllables("你好"))
+        assertEquals(1, syllables("दिल")) // "dil": the vowel sign isn't a letter of its own
+        assertEquals(1, syllables("..."))
+    }
 }

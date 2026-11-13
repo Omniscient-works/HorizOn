@@ -58,7 +58,7 @@ Today a sideways swipe toggles between clock + music and the full clock. It beco
 
 A Compose `Canvas` in `ui/lyrics/LyricsWeb.kt`, driven by `withFrameNanos` and only while the page is visible.
 
-- **Timing.** LRC files time each line. Words get evenly spaced times across their line, ending a little before the next line starts. "Enhanced" LRC files, which time each word, are used directly when present.
+- **Timing.** LRC files time each line. Within a line, each word gets time in proportion to its syllables (plus a small gap), at the song's own singing pace, estimated from how tightly its lines are packed (a low percentile of ms-per-syllable across lines, since a line before a pause looks slow). A line never runs past 90% of the way to the next one, and a line followed by a pause isn't drawn out across it. "Enhanced" LRC files, which time each word, are used directly when present. Words fade in over about 0.1 s, so they read as arriving on the beat.
 - **Placing a word.**
   - Try about 18 spots at 95–180 dp from the previous word, in random directions, squeezed a little vertically.
   - Keep them inside the safe area, below the header and above the progress area.
@@ -138,7 +138,7 @@ Colour changes animate over 600 ms, as the card tint already does.
 ## 7. Visualizer (no lyrics, and the offline build)
 
 `ui/lyrics/Visualizer.kt`:
-- A small galaxy, seen tilted, with nebula clouds, a bright layered core and a drifting dust lane: two spiral arms of stars in colours taken from the album's accent (pale and warm at the core, the accent, then cooler neighbours on the colour wheel) turn slowly around the cover, which sits at the core as a planet with a lit side and a glowing rim. The near half of the disc passes in front of the planet. Background stars drift at three depths and twinkle; now and then a shooting star crosses. Everything else stays black, and the page runs edge to edge under the camera cutout.
+- A small galaxy, seen tilted, with nebula clouds, a bright layered core and a drifting dust lane: two spiral arms of stars in the album cover's own main colours (a pale core from the lightest, then the cover's colours, each star drifting slowly toward its neighbour's) turn slowly around the cover, which sits at the core as a planet with a lit side and a glowing rim. The near half of the disc passes in front of the planet. Background stars drift at three depths and twinkle; now and then a shooting star crosses. Everything else stays black, and the page runs edge to edge under the camera cutout.
 - When the song changes, the galaxy whirls up, collapses toward the core and blooms back out in the new song's colours.
 - **Movement:** the galaxy turns with the playback position, inner stars faster than outer ones, and the core glow and stars swell on a pulse that repeats at an assumed 118 BPM. Paused, it all but stops.
 - A soft accent glow behind the cover swells with the pulse.
