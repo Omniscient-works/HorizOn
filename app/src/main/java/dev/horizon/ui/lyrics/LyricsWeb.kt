@@ -1,5 +1,6 @@
 package dev.horizon.ui.lyrics
 
+import android.os.Build
 import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
@@ -19,6 +20,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -73,7 +75,7 @@ private const val MAX_CATCH_UP = 12
 /** A line followed by at least this much silence is a held ending and gets a finale. */
 private const val HELD_MS = 2_000L
 
-/** How long a finale's glow and shockwave take. */
+/** How long a finale's glow and ripple take. */
 private const val FINALE_MS = 1_400f
 
 /** Over this long before the outro takes over, the last line's shape drifts apart and fades. */
@@ -105,7 +107,18 @@ internal fun LyricsWeb(engine: EchoEngine, nowPlaying: NowPlaying, accent: Color
     LaunchedEffect(engine) {
         while (true) withFrameMillis { frame = it }
     }
-    Canvas(modifier) {
+    // Held endings ripple through the lyrics like a drop on glass (Android 13+; older phones get rings).
+    val glass = remember { if (reduceMotion) null else GlassRipple.createOrNull() }
+    val rippleLayer = if (glass == null) {
+        Modifier
+    } else {
+        Modifier.graphicsLayer {
+            if (frame < 0L) return@graphicsLayer
+            val ripple = engine.ripple
+            renderEffect = if (ripple != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) glass.effect(ripple, density) else null
+        }
+    }
+    Canvas(modifier.then(rippleLayer)) {
         if (frame < 0L) return@Canvas // Reading the frame clock makes this redraw every frame.
         val now = SystemClock.elapsedRealtime()
         engine.update(track.positionAt(now), now, size.width, size.height, density, reduceMotion)
@@ -161,6 +174,10 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
     private var spawned = 0
     private var lastIdx = -1
     private var cam = Offset.Zero
+
+    /** The ripple from a held ending, while it spreads; read by the glass effect each frame. */
+    var ripple: Ripple? = null
+        private set
     private var position = 0L
     private var width = 0f
     private var height = 0f
@@ -247,6 +264,7 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
     }
 
     private fun reset() {
+        ripple = null
         bursts.clear()
         layouts.clear()
         shapes.clear()
@@ -446,6 +464,7 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
     }
 
     fun draw(scope: DrawScope, now: Long, accent: Color, measurer: TextMeasurer, reduceMotion: Boolean) {
+        ripple = null
         with(scope) {
             drawSky(now, accent, measurer, reduceMotion)
             translate(cam.x, cam.y) { drawShapes(now, accent, measurer, reduceMotion) }
@@ -556,16 +575,21 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
             }
         }
 
-        // The shockwave: a ring that leaves the last word of a held line.
-        if (cur != null && finale in 0f..1f && !reduceMotion) {
-            val eased = 1f - (1f - finale) * (1f - finale)
-            val ring = 0.5f * (1f - finale) * fade
-            if (ring > 0f) {
+        // The ripple: a held line's last word sends a wave out through the lyrics, like a drop on
+        // glass. Where the glass effect isn't available, soft rings spread like water instead.
+        ripple = null
+        if (cur != null && finale in 0f..1f && finale < 1f && !reduceMotion) {
+            val centre = at(latest, cur)
+            ripple = Ripple(centre + cam, finale, (if (chorus) 1.25f else 1f) * fade)
+            for (k in 0 until 3) {
+                val f = (finale * 1.15f - k * 0.16f).coerceIn(0f, 1f)
+                if (f <= 0f || f >= 1f) continue
+                val eased = ease(f)
                 drawCircle(
-                    color = accent.copy(alpha = ring),
-                    radius = (26f + (if (chorus) 190f else 140f) * eased) * density,
-                    center = at(latest, cur),
-                    style = Stroke(width = (2.5f * (1f - finale) + 0.5f) * density),
+                    color = accent.copy(alpha = (0.32f - k * 0.08f) * (1f - f) * fade),
+                    radius = (14f + (if (chorus) 210f else 160f) * eased) * density,
+                    center = centre,
+                    style = Stroke(width = (1.6f * (1f - f) + 0.4f) * density),
                 )
             }
         }
