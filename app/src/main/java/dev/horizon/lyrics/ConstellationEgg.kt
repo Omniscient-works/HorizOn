@@ -4,8 +4,8 @@ import kotlin.random.Random
 
 /** The rare constellation in the lyrics: how rare it is, and a way for debug builds to force it. */
 object ConstellationEgg {
-    /** About one song in 500. Very rare on purpose: it should feel like a find. */
-    const val CHANCE = 1f / 500
+    /** About one song in 100. Still rare, so it feels like a find. */
+    const val CHANCE = 1f / 100
 
     /** Debug builds set this to show a constellation in the next song's lyrics. */
     @Volatile

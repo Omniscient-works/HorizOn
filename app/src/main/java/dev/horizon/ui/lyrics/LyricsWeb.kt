@@ -1,5 +1,6 @@
 package dev.horizon.ui.lyrics
 
+import android.os.Build
 import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.runtime.Composable
@@ -19,6 +20,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
@@ -33,10 +35,12 @@ import dev.horizon.lyrics.LYRICS_BREAK_MS
 import dev.horizon.lyrics.LYRICS_HOLD_MS
 import dev.horizon.lyrics.TimedWord
 import dev.horizon.lyrics.countAt
+import dev.horizon.lyrics.titleRuns
 import dev.horizon.media.NowPlaying
 import dev.horizon.ui.theme.Muted
 import dev.horizon.ui.theme.Paper
 import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -57,13 +61,21 @@ private const val PULSE_MS = 900f
 private const val FADE_MS = 16_000f
 private const val SHRINK_MS = 2_500f
 
+/** How many random versions of a line's shape are tried before keeping the clearest. */
+private const val LAYOUT_TRIES = 8
+
+/** The song's name in the lyrics: how long its highlighter takes to sweep, and its burst when complete. */
+private const val TITLE_SWEEP_MS = 450f
+private const val TITLE_BURST_MS = 1_500f
+private const val TITLE_SPARKS = 14
+
 /** A jump of more than this many words (a seek forward) rebuilds from the current line. */
 private const val MAX_CATCH_UP = 12
 
 /** A line followed by at least this much silence is a held ending and gets a finale. */
 private const val HELD_MS = 2_000L
 
-/** How long a finale's glow and shockwave take. */
+/** How long a finale's glow and ripple take. */
 private const val FINALE_MS = 1_400f
 
 /** Over this long before the outro takes over, the last line's shape drifts apart and fades. */
@@ -80,7 +92,7 @@ private const val SKY_FADE_MS = 3_000f
 
 /**
  * Time-synced lyrics in the Echo style (Lyrics_plan.md, section 4): each lyric line becomes its own
- * small zigzag shape; a line that comes back (a chorus) redraws its shape somewhere new, with a thread back;
+ * small shape, a different random path every time; a line that comes back (a chorus) redraws its shape somewhere new, with a thread back;
  * a word sung earlier in another line gets a dotted thread back to it; the current word grows bolder
  * the longer it is held. Very rarely ([ConstellationEgg]) the words build a real constellation,
  * which only shows itself once complete. Follows [nowPlaying]'s position, so pause, seek and skip
@@ -95,7 +107,18 @@ internal fun LyricsWeb(engine: EchoEngine, nowPlaying: NowPlaying, accent: Color
     LaunchedEffect(engine) {
         while (true) withFrameMillis { frame = it }
     }
-    Canvas(modifier) {
+    // Held endings ripple through the lyrics like a drop on glass (Android 13+; older phones get rings).
+    val glass = remember { if (reduceMotion) null else GlassRipple.createOrNull() }
+    val rippleLayer = if (glass == null) {
+        Modifier
+    } else {
+        Modifier.graphicsLayer {
+            if (frame < 0L) return@graphicsLayer
+            val ripple = engine.ripple
+            renderEffect = if (ripple != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) glass.effect(ripple, density) else null
+        }
+    }
+    Canvas(modifier.then(rippleLayer)) {
         if (frame < 0L) return@Canvas // Reading the frame clock makes this redraw every frame.
         val now = SystemClock.elapsedRealtime()
         engine.update(track.positionAt(now), now, size.width, size.height, density, reduceMotion)
@@ -116,6 +139,9 @@ private class Shape(val line: Int, val key: String, val pts: List<Offset>, val c
     var shrink = 1f
 }
 
+/** The title, just sung in full: its words and when it landed. */
+private class Burst(val nodes: List<Node>, val shape: Shape, val born: Long)
+
 private class Thread(val a: Node, val aShape: Shape, val b: Node, val bShape: Shape, val born: Long)
 
 private class Sky(val c: Constellation, val from: Int, val pos: List<Offset>, val centre: Offset, val bottom: Float) {
@@ -128,7 +154,12 @@ private class Sky(val c: Constellation, val from: Int, val pos: List<Offset>, va
 }
 
 /** The song's Echo shapes and state, kept for as long as the lyrics are on screen. */
-internal class EchoEngine(private val words: List<TimedWord>) {
+internal class EchoEngine(private val words: List<TimedWord>, title: String = "") {
+    /** Which title run each word belongs to (-1 for none), so the song's own name can shine when sung. */
+    private val titleRun = IntArray(words.size) { -1 }
+    private val titleRuns = words.titleRuns(title)
+    private val bursts = ArrayList<Burst>()
+
     /** Fresh every time, so a song never lays out the same way twice. */
     private val random = Random(System.nanoTime())
     private val wordInLine = IntArray(words.size)
@@ -143,6 +174,10 @@ internal class EchoEngine(private val words: List<TimedWord>) {
     private var spawned = 0
     private var lastIdx = -1
     private var cam = Offset.Zero
+
+    /** The ripple from a held ending, while it spreads; read by the glass effect each frame. */
+    var ripple: Ripple? = null
+        private set
     private var position = 0L
     private var width = 0f
     private var height = 0f
@@ -153,6 +188,7 @@ internal class EchoEngine(private val words: List<TimedWord>) {
     private var sky: Sky? = null
 
     init {
+        titleRuns.forEachIndexed { r, run -> for (i in run) titleRun[i] = r }
         words.forEachIndexed { i, w ->
             val j = lineSize[w.line] ?: 0
             wordInLine[i] = j
@@ -228,6 +264,8 @@ internal class EchoEngine(private val words: List<TimedWord>) {
     }
 
     private fun reset() {
+        ripple = null
+        bursts.clear()
         layouts.clear()
         shapes.clear()
         threads.clear()
@@ -280,6 +318,12 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         val at = shape.pts[(j - shape.offset).coerceIn(0, shape.pts.size - 1)]
         val node = Node(w, idx, at, now)
         shape.nodes += node
+        // The song's name has just been sung in full: it bursts into light.
+        val run = titleRun[idx]
+        if (run >= 0 && idx == titleRuns[run].last) {
+            val members = shape.nodes.filter { titleRun[it.idx] == run }
+            bursts += Burst(members, shape, now)
+        }
         // A returning line: a thread back to where it was last sung, if that copy is still showing.
         earlier?.nodes?.firstOrNull()?.let { threads += Thread(it, earlier, node, shape, now) }
         // Echo thread: the same word, sung earlier in a different line that is still showing.
@@ -304,8 +348,10 @@ internal class EchoEngine(private val words: List<TimedWord>) {
     }
 
     /**
-     * Lays a line out as its own small shape: a zigzag walk, like a constellation, from a spot away
-     * from every shape drawn so far (including ones that may return), keeping clear of their words.
+     * Lays a line out as its own small shape, starting from a spot away from every shape drawn so far
+     * (including ones that may return). Each line picks its own kind of path at random (a drifting
+     * walk, an arc, a wave, an opening spiral, a loose scatter, now and then a zigzag) and a few
+     * versions are tried, keeping the one that stays clearest of the other words.
      */
     private fun layoutLine(count: Int): List<Offset> {
         val left = width * 0.09f
@@ -315,43 +361,75 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         val skyPts = sky?.pos.orEmpty()
         val others = shapes.flatMap { it.pts } + skyPts
         val centres = shapes.map { it.centre } + listOfNotNull(sky?.centre)
-        var origin = Offset(width / 2, height / 2)
-        var best = -1f
+        fun randomSpot() = Offset(left + random.nextFloat() * (right - left), top + random.nextFloat() * (bottom - top))
+        fun roomAt(c: Offset) = centres.minOfOrNull { hypot(it.x - c.x, (it.y - c.y) * 1.3f) } ?: 1e6f
+        var far = randomSpot()
         repeat(30) {
-            val c = Offset(left + random.nextFloat() * (right - left), top + random.nextFloat() * (bottom - top))
-            val d = centres.minOfOrNull { hypot(it.x - c.x, (it.y - c.y) * 1.3f) } ?: 1e6f
-            if (d > best) {
-                best = d
-                origin = c
+            val c = randomSpot()
+            if (roomAt(c) > roomAt(far)) far = c
+        }
+        var best: List<Offset> = listOf(far)
+        var bestScore = -1f
+        repeat(LAYOUT_TRIES) { attempt ->
+            // Mostly from the roomiest spot, sometimes from somewhere nearby, for variety.
+            val origin = if (attempt % 3 == 0) far else Offset(
+                (far.x + (random.nextFloat() - 0.5f) * width * 0.2f).coerceIn(left, right),
+                (far.y + (random.nextFloat() - 0.5f) * height * 0.2f).coerceIn(top, bottom),
+            )
+            val pts = walk(origin, count, left, right, top, bottom)
+            var score = 1e6f
+            for ((i, p) in pts.withIndex()) {
+                for (o in others) score = min(score, hypot(o.x - p.x, (o.y - p.y) * 1.4f))
+                // Words of the same line shouldn't crowd each other either.
+                for (j in 0 until i - 1) score = min(score, hypot(pts[j].x - p.x, pts[j].y - p.y) * 1.2f)
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = pts
             }
         }
-        // Head away from the nearer side, zigzagging up and down as it goes.
-        val heading = if (origin.x < (left + right) / 2) 0f else PI.toFloat()
-        val flip = if (heading == 0f) 1f else -1f
+        return best
+    }
+
+    /** One random path of [count] points from [origin], turning back from the edges it meets. */
+    private fun walk(origin: Offset, count: Int, left: Float, right: Float, top: Float, bottom: Float): List<Offset> {
         val pts = ArrayList<Offset>(count)
         pts += origin
-        var sign = if (random.nextBoolean()) 1f else -1f
+        if (count < 2) return pts
+        val tau = 2f * PI.toFloat()
+        // Set off roughly toward the open middle, at a random slant.
+        var heading = atan2((top + bottom) / 2 - origin.y, (left + right) / 2 - origin.x) + (random.nextFloat() - 0.5f) * 2.4f
+        val style = random.nextInt(100)
+        val step = (46f + random.nextFloat() * 34f) * density
+        val turn = (0.2f + random.nextFloat() * 0.35f) * (if (random.nextBoolean()) 1f else -1f)
+        val waveAmp = 0.35f + random.nextFloat() * 0.6f
+        val waveFreq = 0.8f + random.nextFloat() * 1.1f
+        val phase = random.nextFloat() * tau
+        var zig = if (random.nextBoolean()) 1f else -1f
+        // Scatter: points around an oval, visited in order of angle, so it reads as a loose ring.
+        val ringR = step * (0.55f + 0.18f * count)
+        val ringStart = random.nextFloat() * tau
+        val ringSquash = 0.55f + random.nextFloat() * 0.45f
         for (i in 1 until count) {
-            var chosen = pts.last()
-            var clearance = -1f
-            repeat(16) {
-                val a = heading + sign * (0.45f + random.nextFloat() * 0.75f) * flip
-                val r = (56f + random.nextFloat() * 40f) * density
-                val c = Offset(
-                    (pts.last().x + kotlin.math.cos(a) * r).coerceIn(left, right),
-                    (pts.last().y + sin(a) * r).coerceIn(top, bottom),
-                )
-                val d = min(
-                    others.minOfOrNull { hypot(it.x - c.x, (it.y - c.y) * 1.4f) } ?: 1e6f,
-                    pts.minOf { hypot(it.x - c.x, it.y - c.y) * 1.2f },
-                )
-                if (d > clearance) {
-                    clearance = d
-                    chosen = c
+            var length = step * (0.75f + random.nextFloat() * 0.5f)
+            var p: Offset
+            if (style >= 92) {
+                val a = ringStart + tau * i / count + (random.nextFloat() - 0.5f) * 0.5f
+                val r = ringR * (0.7f + random.nextFloat() * 0.5f)
+                p = origin + Offset(kotlin.math.cos(a) * r, sin(a) * r * ringSquash) - Offset(kotlin.math.cos(ringStart) * ringR, sin(ringStart) * ringR * ringSquash)
+            } else {
+                val dir = when {
+                    style < 26 -> { heading += (random.nextFloat() - 0.5f) * 0.8f; heading } // drifting walk
+                    style < 46 -> { heading += turn; heading } // arc
+                    style < 68 -> { heading += (random.nextFloat() - 0.5f) * 0.2f; heading + waveAmp * sin(i * waveFreq + phase) } // wave
+                    style < 84 -> { heading += turn * 2f / (1f + i * 0.35f); length *= 0.7f + i * 0.08f; heading } // opening spiral
+                    else -> { zig = -zig; heading + zig * (0.45f + random.nextFloat() * 0.6f) } // zigzag, now and then
                 }
+                p = pts.last() + Offset(kotlin.math.cos(dir), sin(dir)) * length
             }
-            pts += chosen
-            sign = -sign
+            if (p.x < left || p.x > right) heading = PI.toFloat() - heading
+            if (p.y < top || p.y > bottom) heading = -heading
+            pts += Offset(p.x.coerceIn(left, right), p.y.coerceIn(top, bottom))
         }
         return pts
     }
@@ -386,6 +464,7 @@ internal class EchoEngine(private val words: List<TimedWord>) {
     }
 
     fun draw(scope: DrawScope, now: Long, accent: Color, measurer: TextMeasurer, reduceMotion: Boolean) {
+        ripple = null
         with(scope) {
             drawSky(now, accent, measurer, reduceMotion)
             translate(cam.x, cam.y) { drawShapes(now, accent, measurer, reduceMotion) }
@@ -479,16 +558,38 @@ internal class EchoEngine(private val words: List<TimedWord>) {
             }
         }
 
-        // The shockwave: a ring that leaves the last word of a held line.
-        if (cur != null && finale in 0f..1f && !reduceMotion) {
-            val eased = 1f - (1f - finale) * (1f - finale)
-            val ring = 0.5f * (1f - finale) * fade
-            if (ring > 0f) {
+        // The title, sung in full: a bloom of light and a ring of sparks from the middle of its words.
+        bursts.removeAll { now - it.born > TITLE_BURST_MS || it.shape !in shapes }
+        for (b in bursts) {
+            val k = (now - b.born) / TITLE_BURST_MS
+            val c = b.nodes.fold(Offset.Zero) { acc, n -> acc + at(b.shape, n) / b.nodes.size.toFloat() }
+            val bloom = (70f + 50f * ease(k)) * density
+            drawCircle(Brush.radialGradient(listOf(accent.copy(alpha = 0.45f * (1f - k) * fade), Color.Transparent), c, bloom), bloom, c)
+            if (reduceMotion) continue
+            drawCircle(accent.copy(alpha = 0.7f * (1f - k) * fade), (18f + 150f * ease(k)) * density, c, style = Stroke((2.2f * (1f - k) + 0.4f) * density))
+            for (r in 0 until TITLE_SPARKS) {
+                val a = r * 2f * PI.toFloat() / TITLE_SPARKS + b.born % 628 / 100f
+                val d = (14f + (60f + 40f * (r % 3)) * ease(k)) * density
+                val sp = c + Offset(kotlin.math.cos(a), sin(a)) * d
+                drawCircle(Paper.copy(alpha = (1f - k) * fade), (2.2f * (1f - k) + 0.6f) * density, sp)
+            }
+        }
+
+        // The ripple: a held line's last word sends a wave out through the lyrics, like a drop on
+        // glass. Where the glass effect isn't available, soft rings spread like water instead.
+        ripple = null
+        if (cur != null && finale in 0f..1f && finale < 1f && !reduceMotion) {
+            val centre = at(latest, cur)
+            ripple = Ripple(centre + cam, finale, (if (chorus) 1.25f else 1f) * fade)
+            for (k in 0 until 3) {
+                val f = (finale * 1.15f - k * 0.16f).coerceIn(0f, 1f)
+                if (f <= 0f || f >= 1f) continue
+                val eased = ease(f)
                 drawCircle(
-                    color = accent.copy(alpha = ring),
-                    radius = (26f + (if (chorus) 190f else 140f) * eased) * density,
-                    center = at(latest, cur),
-                    style = Stroke(width = (2.5f * (1f - finale) + 0.5f) * density),
+                    color = accent.copy(alpha = (0.32f - k * 0.08f) * (1f - f) * fade),
+                    radius = (14f + (if (chorus) 210f else 160f) * eased) * density,
+                    center = centre,
+                    style = Stroke(width = (1.6f * (1f - f) + 0.4f) * density),
                 )
             }
         }
@@ -513,13 +614,18 @@ internal class EchoEngine(private val words: List<TimedWord>) {
                 )
                 // An older word that a thread just reached back to lights up for a moment.
                 val echoed = threads.firstOrNull { it.a === n && now - it.born < 2_200 }
+                val isTitle = titleRun[n.idx] >= 0
                 val (size, weight, color) = when {
-                    isCur -> Triple(if (chorus) 38 else 32, heldWeight(n), Paper.copy(alpha = appear * fade))
+                    isCur -> Triple((if (chorus) 38 else 32) + (if (isTitle) 6 else 0), heldWeight(n), Paper.copy(alpha = appear * fade))
+                    isLatest && isTitle -> Triple(if (chorus) 23 else 20, 700, Paper.copy(alpha = fade))
                     isLatest -> Triple(if (chorus) 20 else 17, 600, Paper.copy(alpha = (0.85f + 0.15f * swell) * fade))
                     echoed != null -> Triple(15, 600, accent.copy(alpha = (0.15f + 0.8f * (1f - (now - echoed.born) / 2_200f)) * fade))
+                    isTitle -> Triple(14, 600, accent.copy(alpha = min(1f, alpha * 1.4f)))
                     else -> Triple(13, 500, Muted.copy(alpha = min(1f, alpha * 1.6f)))
                 }
-                label(measurer, n, p, size, weight, color, if (isCur) 14f else 9f, isCur, accent)
+                // The song's own name gets a highlighter stroke that sweeps under it as it is sung.
+                val highlight = if (isTitle) ease((now - n.born) / TITLE_SWEEP_MS) * (if (isLatest) 1f else 0.5f) else 0f
+                label(measurer, n, p, size, weight, color, if (isCur) 14f else 9f, isCur, accent, highlight = highlight)
             }
         }
     }
@@ -664,6 +770,7 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         isCurrent: Boolean,
         accent: Color,
         placed: MutableList<FloatArray>? = null,
+        highlight: Float = 0f,
     ) {
         val layout = n.layouts.getOrPut(size * 1000 + weight) {
             measurer.measure(n.word.text, TextStyle(fontSize = size.sp, fontWeight = FontWeight(weight)), density = Density(density, fontScale))
@@ -678,6 +785,15 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         if (!isCurrent && hits(box(right))) return
         placed?.add(box(right))
         val topLeft = Offset(if (right) p.x + gap else p.x - gap - w, p.y - h / 2f)
+        if (highlight > 0f) {
+            val pad = 3f * density
+            drawRoundRect(
+                accent.copy(alpha = 0.32f * highlight * color.alpha),
+                topLeft = topLeft + Offset(-pad, h * 0.5f),
+                size = androidx.compose.ui.geometry.Size((w + pad * 2) * highlight, h * 0.42f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.2f),
+            )
+        }
         if (isCurrent) {
             // A soft glow behind the word being sung.
             drawText(layout, color = accent.copy(alpha = 0.35f * color.alpha), topLeft = topLeft + Offset(0f, 1f * density))

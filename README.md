@@ -16,7 +16,7 @@ An open-source Android app that turns a charging phone on its side into a calm d
 - Starts automatically while charging (Android screen saver), or launch it from the app icon
 - Burn-in protection, and a pure black background so OLED screens keep unused pixels off
 - Optional turn-by-turn directions from Google Maps next to the music (tap the screen, then **Directions**)
-- Swipe left while music plays: time-synced lyrics in the Echo style (HorizOn+ only), or a visualizer in the album's colours. Each lyric line becomes a small shape, a returning chorus lights up its old shape again, a repeated word links back to where it was first sung, and the word being sung grows bolder the longer it's held. The visualizer also fills a song's intro (with a countdown), long instrumental breaks and the outro; choruses and held line endings get a glow and a shockwave
+- Swipe left while music plays: time-synced lyrics in the Echo style (HorizOn+ only), or a visualizer in the album's colours. Each lyric line becomes a small shape, a returning chorus lights up its old shape again, a repeated word links back to where it was first sung, and the word being sung grows bolder the longer it's held. The visualizer also fills a song's intro (with a countdown), long instrumental breaks and the outro; choruses and held line endings get a glow and a ripple, like a drop on glass
 
 Night mode, more clock faces and alarm display are planned for v0.2.
 
