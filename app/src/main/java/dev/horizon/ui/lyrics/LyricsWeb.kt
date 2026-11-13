@@ -75,8 +75,9 @@ private const val MAX_CATCH_UP = 12
 /** A line followed by at least this much silence is a held ending and gets a finale. */
 private const val HELD_MS = 2_000L
 
-/** How long a finale's glow and ripple take. */
+/** How long a finale's glow takes, and its ripple through the glass. */
 private const val FINALE_MS = 1_400f
+private const val RIPPLE_MS = 2_400f
 
 /** Over this long before the outro takes over, the last line's shape drifts apart and fades. */
 private const val DISSOLVE_MS = 1_600f
@@ -578,16 +579,22 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
         // The ripple: a held line's last word sends a wave out through the lyrics, like a drop on
         // glass. Where the glass effect isn't available, soft rings spread like water instead.
         ripple = null
-        if (cur != null && finale in 0f..1f && finale < 1f && !reduceMotion) {
+        // The ripple runs longer than the glow, so the rings can travel out and settle.
+        val rippleK = if (cur != null && line != null && line.held && position >= line.lastWordMs) {
+            (position - line.lastWordMs) / RIPPLE_MS
+        } else {
+            -1f
+        }
+        if (cur != null && rippleK in 0f..1f && rippleK < 1f && !reduceMotion) {
             val centre = at(latest, cur)
-            ripple = Ripple(centre + cam, finale, (if (chorus) 1.25f else 1f) * fade)
+            ripple = Ripple(centre + cam, rippleK, (if (chorus) 1.25f else 1f) * fade)
             for (k in 0 until 3) {
-                val f = (finale * 1.15f - k * 0.16f).coerceIn(0f, 1f)
+                val f = (rippleK * 1.15f - k * 0.16f).coerceIn(0f, 1f)
                 if (f <= 0f || f >= 1f) continue
                 val eased = ease(f)
                 drawCircle(
-                    color = accent.copy(alpha = (0.32f - k * 0.08f) * (1f - f) * fade),
-                    radius = (14f + (if (chorus) 210f else 160f) * eased) * density,
+                    color = accent.copy(alpha = (0.26f - k * 0.07f) * (1f - f) * fade),
+                    radius = (14f + (if (chorus) 300f else 240f) * eased) * density,
                     center = centre,
                     style = Stroke(width = (1.6f * (1f - f) + 0.4f) * density),
                 )
