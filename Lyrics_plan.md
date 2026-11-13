@@ -77,6 +77,18 @@ A Compose `Canvas` in `ui/lyrics/LyricsWeb.kt`, driven by `withFrameNanos` and o
 - **Battery.** It's mostly pure black with thin lines. Frames run only while the page is on screen. If testing shows it costs too much, cap it at 30 fps.
 - **Text.** Shown as LRCLIB has it (any language or script). Line text wider than the screen is never split into nodes larger than one word, so long words are fine.
 
+### 4.1 Echo (0.4.0)
+The web was replaced by the Echo style, prototyped in the mockup:
+- Each lyric line is laid out as its own small zigzag shape, placed away from every shape drawn so far.
+- A line that comes back (a chorus) reuses its shape: the old outline appears faint and dotted, and the words trace it, glowing.
+- A word sung earlier in a different line that is still showing gets a dotted thread back to it, and the earlier word lights up briefly.
+- The current word's weight grows from light to bold over the time it is held; it arrives with a ring pulse and a spark runs along the line to it.
+- Finished lines shrink slightly toward their centre and fade over 16 s; the view drifts gently toward the current word.
+- Kept from 0.3.1: the visualizer in intros, long breaks and the outro, held-line finales and chorus emphasis.
+
+### 4.2 The rare constellation
+About one song in 500 (`ConstellationEgg`), the words land on the stars of a real constellation (14 figures, from d3-celestial's data, BSD-3-Clause). While it builds, the view stays zoomed in (2.3×) on the newest word, so it reads as ordinary lyrics. When the last star lights, the view pulls back over 1.8 s, the lines glow, stars take their real brightness, and the name appears in English and Hindi. The lyrics carry on as a caption for 6 s, then Echo resumes. Debug builds can force it: `adb shell am start -n dev.horizon/.debug.DemoMediaActivity --ez constellation true`.
+
 ## 5. Lyrics data (online build)
 
 ### 5.1 Lookup

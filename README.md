@@ -16,7 +16,7 @@ An open-source Android app that turns a charging phone on its side into a calm d
 - Starts automatically while charging (Android screen saver), or launch it from the app icon
 - Burn-in protection, and a pure black background so OLED screens keep unused pixels off
 - Optional turn-by-turn directions from Google Maps next to the music (tap the screen, then **Directions**)
-- Swipe left while music plays: time-synced lyrics drawn as a web of words (HorizOn+ only), or a visualizer in the album's colours. The visualizer also fills a song's intro (with a countdown), long instrumental breaks and the outro; choruses and held line endings get a glow and a shockwave
+- Swipe left while music plays: time-synced lyrics in the Echo style (HorizOn+ only), or a visualizer in the album's colours. Each lyric line becomes a small shape, a returning chorus lights up its old shape again, a repeated word links back to where it was first sung, and the word being sung grows bolder the longer it's held. Very rarely, about one song in 500, the words build a real constellation that only reveals itself when it's complete. The visualizer also fills a song's intro (with a countdown), long instrumental breaks and the outro; choruses and held line endings get a glow and a shockwave
 
 Night mode, more clock faces and alarm display are planned for v0.2.
 
@@ -38,7 +38,7 @@ HorizOn+ is the same, plus one thing: once you agree to show lyrics, it sends th
 
 ## Install
 
-1. Download the latest `HorizOn-vX.Y.Z.apk` (or `HorizOnPlus-vX.Y.Z.apk` for lyrics) from [Releases](https://github.com/Aisu2635/HorizOn/releases) on your phone and open it. Android will ask you to allow installs from your browser or file manager.
+1. Download the latest `HorizOn-vX.Y.Z.apk` (or `HorizOnPlus-vX.Y.Z.apk` for lyrics) from [Releases](https://github.com/Omniscient-works/HorizOn/releases) on your phone and open it. Android will ask you to allow installs from your browser or file manager.
 2. Turn the phone sideways and open **HorizOn**.
 3. Tap **Allow access** on the music card. Because the app isn't from the Play Store, Android 13+ may say the setting is **restricted**: long-press the HorizOn icon → **App info** → **⋮** → **Allow restricted settings**, then try again.
 4. Optional: when headphones are connected, tap **Show headphone battery** and allow **Nearby devices**.
@@ -64,13 +64,17 @@ Requirements: Android Studio (recent stable), which includes the JDK and Android
 ./gradlew lintOfflineDebug lintOnlineDebug                      # lint
 ```
 
-Debug builds include demo players: `adb shell am start -n dev.horizon/.debug.DemoMediaActivity` plays fake songs with made-up lyrics, and `.debug.DemoNavActivity` plays a fake route.
+Debug builds include demo players: `adb shell am start -n dev.horizon/.debug.DemoMediaActivity` plays fake songs with made-up lyrics (add `--ez constellation true` to see the rare constellation straight away), and `.debug.DemoNavActivity` plays a fake route.
 
 Or open the folder in Android Studio and press Run.
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Credits
+
+Constellation figures, star positions and brightness come from [d3-celestial](https://github.com/ofrohn/d3-celestial) by Olaf Frohn, used under the BSD 3-Clause licence. Lyrics in HorizOn+ come from [LRCLIB](https://lrclib.net).
 
 ## License
 

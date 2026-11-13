@@ -113,6 +113,8 @@ fun LyricsPage(
 
     // Before the first word and in long breaks the web has nothing to draw, so the visualizer fills in.
     val words = remember(synced) { synced?.lyrics?.timedWords().orEmpty() }
+    // Kept here rather than in the web, so the song's shapes outlive the visualizer filling a break.
+    val engine = remember(words) { words.takeIf { it.isNotEmpty() }?.let { EchoEngine(it) } }
     val wait by produceState<LyricsWait?>(null, words, nowPlaying) {
         while (true) {
             value = words.waitAt(nowPlaying.positionAt(SystemClock.elapsedRealtime()))
@@ -141,7 +143,7 @@ fun LyricsPage(
     ) {
         Crossfade(synced?.lyrics?.takeIf { wait == null }, label = "lyrics", modifier = Modifier.fillMaxSize()) { lyrics ->
             if (lyrics != null) {
-                LyricsWeb(lyrics, nowPlaying, colors.accent, reduceMotion, Modifier.fillMaxSize())
+                if (engine != null) LyricsWeb(engine, nowPlaying, colors.accent, reduceMotion, Modifier.fillMaxSize())
             } else {
                 Visualizer(nowPlaying, colors.accent, Modifier.fillMaxSize().padding(top = 56.dp, bottom = 24.dp))
             }

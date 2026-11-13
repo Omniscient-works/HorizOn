@@ -15,6 +15,7 @@ import android.os.Bundle
 import android.os.SystemClock
 import androidx.core.graphics.createBitmap
 import dev.horizon.DeskActivity
+import dev.horizon.lyrics.ConstellationEgg
 import dev.horizon.lyrics.LrcParser
 import dev.horizon.lyrics.LyricsRepository
 import dev.horizon.lyrics.LyricsRequest
@@ -29,11 +30,14 @@ import java.util.Locale
  * album colours:
  *
  *     adb shell am start -n dev.horizon/.debug.DemoMediaActivity
+ *     adb shell am start -n dev.horizon/.debug.DemoMediaActivity --ez constellation true
  */
 class DemoMediaActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         LyricsRepository.demo = DemoLyrics
+        // Try the rare constellation without waiting for it: --ez constellation true
+        if (intent.getBooleanExtra("constellation", false)) ConstellationEgg.forceNext = true
         DemoSession.start(applicationContext)
         startActivity(Intent(this, DeskActivity::class.java))
         finish()
