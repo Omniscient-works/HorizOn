@@ -4,6 +4,7 @@ import android.os.SystemClock
 import android.provider.Settings
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Canvas
@@ -73,6 +74,10 @@ import kotlinx.coroutines.delay
 /** How long the song position stays up after a tap. */
 private const val SCRUB_VISIBLE_MS = 3_500L
 
+/** How long a note such as "No lyrics found" stays before fading away, and how long the fade takes. */
+private const val STATUS_VISIBLE_MS = 5_000L
+private const val STATUS_FADE_MS = 1_200
+
 /** A shorter intro than this gets no countdown; it would only flash. */
 private const val INTRO_COUNTDOWN_MIN_MS = 4_000L
 
@@ -105,22 +110,26 @@ fun LyricsPage(
     val request = remember(nowPlaying.packageName, nowPlaying.title, nowPlaying.artist, nowPlaying.durationMs) {
         LyricsRequest(nowPlaying.packageName, nowPlaying.title, nowPlaying.artist, nowPlaying.album, nowPlaying.durationMs)
     }
-    val result by produceState<LyricsResult?>(null, request, lyricsEnabled) {
-        value = null
-        value = LyricsRepository.find(request, context.packageName, lyricsEnabled)
+    // Each result remembers which song it belongs to, so a new song never shows the last one's lyrics.
+    val loaded by produceState<Pair<LyricsRequest, LyricsResult?>>(request to null, request, lyricsEnabled) {
+        value = request to null
+        value = request to LyricsRepository.find(request, context.packageName, lyricsEnabled)
     }
+    val result = loaded.second.takeIf { loaded.first == request }
     val synced = result as? LyricsResult.Synced
 
     // Before the first word and in long breaks the web has nothing to draw, so the visualizer fills in.
     val words = remember(synced) { synced?.lyrics?.timedWords().orEmpty() }
     // Kept here rather than in the web, so the song's shapes outlive the visualizer filling a break.
     val engine = remember(words) { words.takeIf { it.isNotEmpty() }?.let { EchoEngine(it) } }
-    val wait by produceState<LyricsWait?>(null, words, nowPlaying) {
+    // Worked out during composition, so it is right on the very frame the song or its lyrics change.
+    val tick by produceState(0L) {
         while (true) {
-            value = words.waitAt(nowPlaying.positionAt(SystemClock.elapsedRealtime()))
+            value = SystemClock.elapsedRealtime()
             delay(250)
         }
     }
+    val wait = remember(words, nowPlaying, tick) { words.waitAt(nowPlaying.positionAt(SystemClock.elapsedRealtime())) }
 
     var taps by remember { mutableIntStateOf(0) }
     var scrubVisible by remember { mutableStateOf(false) }
@@ -173,13 +182,25 @@ fun LyricsPage(
             lyricsEnabled && result == LyricsResult.Unavailable -> "Couldn't reach the lyrics service"
             else -> null
         }
-        if (status != null) {
-            Text(
-                status,
-                color = Muted,
-                fontSize = 13.sp,
-                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
-            )
+        // The countdown stays while it counts; anything else is said once, then fades away.
+        val lingers = status != null && introLeft == null
+        var statusShown by remember { mutableStateOf(true) }
+        LaunchedEffect(status.takeIf { lingers }, request) {
+            statusShown = true
+            if (lingers) {
+                delay(STATUS_VISIBLE_MS)
+                statusShown = false
+            }
+        }
+        val lastStatus = remember { arrayOf("") }
+        if (status != null) lastStatus[0] = status
+        AnimatedVisibility(
+            status != null && (statusShown || !lingers),
+            enter = fadeIn(),
+            exit = fadeOut(tween(STATUS_FADE_MS)),
+            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
+        ) {
+            Text(lastStatus[0], color = Muted, fontSize = 13.sp)
         }
 
         AnimatedVisibility(

@@ -37,6 +37,7 @@ import dev.horizon.media.NowPlaying
 import dev.horizon.ui.theme.Muted
 import dev.horizon.ui.theme.Paper
 import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.hypot
 import kotlin.math.max
 import kotlin.math.min
@@ -56,6 +57,9 @@ private const val PULSE_MS = 900f
 /** Finished lines fade out over this long after their line ends, shrinking slightly as they go. */
 private const val FADE_MS = 16_000f
 private const val SHRINK_MS = 2_500f
+
+/** How many random versions of a line's shape are tried before keeping the clearest. */
+private const val LAYOUT_TRIES = 8
 
 /** A jump of more than this many words (a seek forward) rebuilds from the current line. */
 private const val MAX_CATCH_UP = 12
@@ -80,7 +84,7 @@ private const val SKY_FADE_MS = 3_000f
 
 /**
  * Time-synced lyrics in the Echo style (Lyrics_plan.md, section 4): each lyric line becomes its own
- * small zigzag shape; a line that comes back (a chorus) redraws its shape somewhere new, with a thread back;
+ * small shape, a different random path every time; a line that comes back (a chorus) redraws its shape somewhere new, with a thread back;
  * a word sung earlier in another line gets a dotted thread back to it; the current word grows bolder
  * the longer it is held. Very rarely ([ConstellationEgg]) the words build a real constellation,
  * which only shows itself once complete. Follows [nowPlaying]'s position, so pause, seek and skip
@@ -304,8 +308,10 @@ internal class EchoEngine(private val words: List<TimedWord>) {
     }
 
     /**
-     * Lays a line out as its own small shape: a zigzag walk, like a constellation, from a spot away
-     * from every shape drawn so far (including ones that may return), keeping clear of their words.
+     * Lays a line out as its own small shape, starting from a spot away from every shape drawn so far
+     * (including ones that may return). Each line picks its own kind of path at random (a drifting
+     * walk, an arc, a wave, an opening spiral, a loose scatter, now and then a zigzag) and a few
+     * versions are tried, keeping the one that stays clearest of the other words.
      */
     private fun layoutLine(count: Int): List<Offset> {
         val left = width * 0.09f
@@ -315,43 +321,75 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         val skyPts = sky?.pos.orEmpty()
         val others = shapes.flatMap { it.pts } + skyPts
         val centres = shapes.map { it.centre } + listOfNotNull(sky?.centre)
-        var origin = Offset(width / 2, height / 2)
-        var best = -1f
+        fun randomSpot() = Offset(left + random.nextFloat() * (right - left), top + random.nextFloat() * (bottom - top))
+        fun roomAt(c: Offset) = centres.minOfOrNull { hypot(it.x - c.x, (it.y - c.y) * 1.3f) } ?: 1e6f
+        var far = randomSpot()
         repeat(30) {
-            val c = Offset(left + random.nextFloat() * (right - left), top + random.nextFloat() * (bottom - top))
-            val d = centres.minOfOrNull { hypot(it.x - c.x, (it.y - c.y) * 1.3f) } ?: 1e6f
-            if (d > best) {
-                best = d
-                origin = c
+            val c = randomSpot()
+            if (roomAt(c) > roomAt(far)) far = c
+        }
+        var best: List<Offset> = listOf(far)
+        var bestScore = -1f
+        repeat(LAYOUT_TRIES) { attempt ->
+            // Mostly from the roomiest spot, sometimes from somewhere nearby, for variety.
+            val origin = if (attempt % 3 == 0) far else Offset(
+                (far.x + (random.nextFloat() - 0.5f) * width * 0.2f).coerceIn(left, right),
+                (far.y + (random.nextFloat() - 0.5f) * height * 0.2f).coerceIn(top, bottom),
+            )
+            val pts = walk(origin, count, left, right, top, bottom)
+            var score = 1e6f
+            for ((i, p) in pts.withIndex()) {
+                for (o in others) score = min(score, hypot(o.x - p.x, (o.y - p.y) * 1.4f))
+                // Words of the same line shouldn't crowd each other either.
+                for (j in 0 until i - 1) score = min(score, hypot(pts[j].x - p.x, pts[j].y - p.y) * 1.2f)
+            }
+            if (score > bestScore) {
+                bestScore = score
+                best = pts
             }
         }
-        // Head away from the nearer side, zigzagging up and down as it goes.
-        val heading = if (origin.x < (left + right) / 2) 0f else PI.toFloat()
-        val flip = if (heading == 0f) 1f else -1f
+        return best
+    }
+
+    /** One random path of [count] points from [origin], turning back from the edges it meets. */
+    private fun walk(origin: Offset, count: Int, left: Float, right: Float, top: Float, bottom: Float): List<Offset> {
         val pts = ArrayList<Offset>(count)
         pts += origin
-        var sign = if (random.nextBoolean()) 1f else -1f
+        if (count < 2) return pts
+        val tau = 2f * PI.toFloat()
+        // Set off roughly toward the open middle, at a random slant.
+        var heading = atan2((top + bottom) / 2 - origin.y, (left + right) / 2 - origin.x) + (random.nextFloat() - 0.5f) * 2.4f
+        val style = random.nextInt(100)
+        val step = (46f + random.nextFloat() * 34f) * density
+        val turn = (0.2f + random.nextFloat() * 0.35f) * (if (random.nextBoolean()) 1f else -1f)
+        val waveAmp = 0.35f + random.nextFloat() * 0.6f
+        val waveFreq = 0.8f + random.nextFloat() * 1.1f
+        val phase = random.nextFloat() * tau
+        var zig = if (random.nextBoolean()) 1f else -1f
+        // Scatter: points around an oval, visited in order of angle, so it reads as a loose ring.
+        val ringR = step * (0.55f + 0.18f * count)
+        val ringStart = random.nextFloat() * tau
+        val ringSquash = 0.55f + random.nextFloat() * 0.45f
         for (i in 1 until count) {
-            var chosen = pts.last()
-            var clearance = -1f
-            repeat(16) {
-                val a = heading + sign * (0.45f + random.nextFloat() * 0.75f) * flip
-                val r = (56f + random.nextFloat() * 40f) * density
-                val c = Offset(
-                    (pts.last().x + kotlin.math.cos(a) * r).coerceIn(left, right),
-                    (pts.last().y + sin(a) * r).coerceIn(top, bottom),
-                )
-                val d = min(
-                    others.minOfOrNull { hypot(it.x - c.x, (it.y - c.y) * 1.4f) } ?: 1e6f,
-                    pts.minOf { hypot(it.x - c.x, it.y - c.y) * 1.2f },
-                )
-                if (d > clearance) {
-                    clearance = d
-                    chosen = c
+            var length = step * (0.75f + random.nextFloat() * 0.5f)
+            var p: Offset
+            if (style >= 92) {
+                val a = ringStart + tau * i / count + (random.nextFloat() - 0.5f) * 0.5f
+                val r = ringR * (0.7f + random.nextFloat() * 0.5f)
+                p = origin + Offset(kotlin.math.cos(a) * r, sin(a) * r * ringSquash) - Offset(kotlin.math.cos(ringStart) * ringR, sin(ringStart) * ringR * ringSquash)
+            } else {
+                val dir = when {
+                    style < 26 -> { heading += (random.nextFloat() - 0.5f) * 0.8f; heading } // drifting walk
+                    style < 46 -> { heading += turn; heading } // arc
+                    style < 68 -> { heading += (random.nextFloat() - 0.5f) * 0.2f; heading + waveAmp * sin(i * waveFreq + phase) } // wave
+                    style < 84 -> { heading += turn * 2f / (1f + i * 0.35f); length *= 0.7f + i * 0.08f; heading } // opening spiral
+                    else -> { zig = -zig; heading + zig * (0.45f + random.nextFloat() * 0.6f) } // zigzag, now and then
                 }
+                p = pts.last() + Offset(kotlin.math.cos(dir), sin(dir)) * length
             }
-            pts += chosen
-            sign = -sign
+            if (p.x < left || p.x > right) heading = PI.toFloat() - heading
+            if (p.y < top || p.y > bottom) heading = -heading
+            pts += Offset(p.x.coerceIn(left, right), p.y.coerceIn(top, bottom))
         }
         return pts
     }

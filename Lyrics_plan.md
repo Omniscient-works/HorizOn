@@ -79,7 +79,7 @@ A Compose `Canvas` in `ui/lyrics/LyricsWeb.kt`, driven by `withFrameNanos` and o
 
 ### 4.1 Echo (0.4.0)
 The web was replaced by the Echo style, prototyped in the mockup:
-- Each lyric line is laid out as its own small zigzag shape, placed away from every shape drawn so far.
+- Each lyric line is laid out as its own small shape, placed away from every shape drawn so far. The path is picked at random per line (a drifting walk, an arc, a wave, an opening spiral, a loose ring, now and then a zigzag), and of several tries the one clearest of the other words is kept.
 - A line that comes back (a chorus) reuses its shape but in a new spot, away from where it was: the outline appears faint and dotted, the words trace it, glowing, and a dotted thread links it to the earlier copy if that is still showing.
 - Layouts are random on every play, so the same song never lays out the same way twice.
 - A word sung earlier in a different line that is still showing gets a dotted thread back to it, and the earlier word lights up briefly.
@@ -137,8 +137,8 @@ Colour changes animate over 600 ms, as the card tint already does.
 ## 7. Visualizer (no lyrics, and the offline build)
 
 `ui/lyrics/Visualizer.kt`:
-- A ring of about 72 bars around the round album cover, drawn in the accent colour.
-- **Movement:** bar lengths come from two slow sine waves around the ring, multiplied by a pulse that repeats at an assumed 118 BPM. The pulse runs only while playing; paused, the bars rest short.
+- An aurora: four bands of light flow across the screen in colours taken from the album's accent (the accent, two neighbours on the colour wheel and a pale tint), with motes of light drifting upward. The cover, a rounded square, floats in the middle on a soft halo. Everything else stays black.
+- **Movement:** each band is two sine waves with its own speed and height, swelling on a pulse that repeats at an assumed 118 BPM. Motion follows the playback position, so paused, it all but rests.
 - A soft accent glow behind the cover swells with the pulse.
 - No microphone permission and no audio capture. A later, optional "React to the music" switch could use Android's `Visualizer` API, which needs the microphone permission and returns silence on some phones (several Xiaomi models). Not in this plan.
 

@@ -104,6 +104,9 @@ private const val CONTROLS_TIMEOUT_MS = 4_000L
 /** Horizontal drag distance that switches between the player and the full clock. */
 private const val SWIPE_THRESHOLD_PX = 120f
 
+/** How long nothing playing must last before the music is treated as gone (players pause between songs). */
+private const val MUSIC_GAP_MS = 4_000L
+
 /** How long the "headphones connected" banner stays up. */
 private const val HEADSET_BANNER_MS = 4_000L
 
@@ -153,8 +156,20 @@ fun DeskScreen(onClose: () -> Unit) {
         hasAccess = media.hasAccess()
         onPauseOrDispose { }
     }
-    val nowPlaying by remember(hasAccess) { if (hasAccess) media.nowPlaying else flowOf(null) }
+    val reportedPlaying by remember(hasAccess) { if (hasAccess) media.nowPlaying else flowOf(null) }
         .collectAsStateWithLifecycle(initialValue = null)
+    // Some players (Amazon Music) report nothing playing for a moment between songs. Hold on to the
+    // last song through that gap, so the screen doesn't jump away from the lyrics or the player.
+    var heldPlaying by remember { mutableStateOf<NowPlaying?>(null) }
+    LaunchedEffect(reportedPlaying) {
+        if (reportedPlaying != null) {
+            heldPlaying = reportedPlaying
+        } else {
+            delay(MUSIC_GAP_MS)
+            heldPlaying = null
+        }
+    }
+    val nowPlaying = reportedPlaying ?: heldPlaying
 
     // Directions mirrored from Google Maps; the listener only fills this while the setting is on.
     val showNavigation by settings.showNavigation.collectAsStateWithLifecycle(initialValue = false)
@@ -177,11 +192,18 @@ fun DeskScreen(onClose: () -> Unit) {
         if (!granted) bluetoothDeclined = true
     }
     val headset by remember(bluetoothGranted) { context.headsetStatus() }.collectAsStateWithLifecycle(initialValue = null)
+    // The badge shows the headphones' name once per connection, not every time the screen changes.
+    var headsetIntroduced by remember { mutableStateOf(false) }
+    LaunchedEffect(headset == null) { if (headset == null) headsetIntroduced = false }
     val headsetSlot: @Composable () -> Unit = {
         val current = headset
         when {
             current == null -> Unit
-            bluetoothGranted || bluetoothDeclined -> HeadsetBadge(current)
+            bluetoothGranted || bluetoothDeclined -> HeadsetBadge(
+                current,
+                introduce = !headsetIntroduced,
+                onIntroduced = { headsetIntroduced = true },
+            )
             else -> HeadsetPermissionChip(onClick = {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                     requestBluetooth.launch(Manifest.permission.BLUETOOTH_CONNECT)

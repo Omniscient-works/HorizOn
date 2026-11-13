@@ -76,14 +76,16 @@ private const val BADGE_EXPANDED_MS = 6_000L
 private const val BADGE_RESIZE_MS = 260
 
 /**
- * Compact headphones badge: icon inside a ring gauge and the percentage. It shows the name
- * when the headphones connect, then shrinks; tap to show the name again (tap again to shrink).
- * The ring sweeps up to the level when it appears and animates on changes.
+ * Compact headphones badge: icon inside a ring gauge and the percentage. It shows the name once
+ * when the headphones connect ([introduce]), then shrinks; tap to show the name again (tap again
+ * to shrink). Moving between screens redraws the badge but doesn't introduce the headphones again:
+ * [onIntroduced] tells the screen it has been done. The ring sweeps up to the level when it
+ * appears and animates on changes.
  */
 @Composable
-fun HeadsetBadge(headset: Headset, modifier: Modifier = Modifier) {
-    // Starts expanded each time the badge appears (i.e. when headphones connect).
-    var expanded by remember { mutableStateOf(true) }
+fun HeadsetBadge(headset: Headset, introduce: Boolean, onIntroduced: () -> Unit, modifier: Modifier = Modifier) {
+    var expanded by remember { mutableStateOf(introduce) }
+    LaunchedEffect(Unit) { if (introduce) onIntroduced() }
     LaunchedEffect(expanded) {
         if (expanded) {
             delay(BADGE_EXPANDED_MS)
