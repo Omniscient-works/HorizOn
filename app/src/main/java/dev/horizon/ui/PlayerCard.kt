@@ -202,7 +202,7 @@ private fun TrackHeader(track: NowPlaying, artSize: Dp, accent: Color) {
             )
             Spacer(Modifier.height(8.dp))
             Text(
-                text = track.title,
+                text = track.displayTitle,
                 color = Paper,
                 fontSize = 24.sp,
                 lineHeight = 28.sp,
@@ -431,7 +431,7 @@ fun NowPlayingPill(nowPlaying: NowPlaying, onClick: () -> Unit, modifier: Modifi
     ) {
         AlbumArt(nowPlaying.art, 32.dp, colors.accent)
         Text(
-            nowPlaying.title,
+            nowPlaying.displayTitle,
             color = Paper,
             fontSize = 14.sp,
             fontWeight = FontWeight.SemiBold,

@@ -10,9 +10,14 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
@@ -110,19 +115,23 @@ private const val MUSIC_GAP_MS = 4_000L
 /** How long the "headphones connected" banner stays up. */
 private const val HEADSET_BANNER_MS = 4_000L
 
-/** Which arrangement the standby screen shows. */
-private enum class DeskLayout {
+/** How long page changes take: a slide between pages, a cross-fade otherwise. */
+private const val PAGE_SLIDE_MS = 520
+private const val PAGE_FADE_MS = 450
+
+/** Which arrangement the standby screen shows; [order] is its place left to right, for the slide. */
+private enum class DeskLayout(val order: Int) {
     /** Clock (or directions) on the left, player card on the right. */
-    Split,
+    Split(1),
 
     /** Navigating with nothing playing: directions on the left, the clock on the right. */
-    Directions,
+    Directions(1),
 
     /** The full-screen clock. */
-    Clock,
+    Clock(0),
 
     /** Lyrics as a web of words, or a visualizer when there are none. */
-    Lyrics,
+    Lyrics(2),
 }
 
 /** The pages a sideways swipe moves between, left to right. */
@@ -351,7 +360,23 @@ fun DeskScreen(onClose: () -> Unit) {
             }
             AnimatedContent(
                 targetState = layout,
-                transitionSpec = { fadeIn() togetherWith fadeOut() },
+                transitionSpec = {
+                    // Moving between pages slides a little in the swipe's direction as it fades;
+                    // other changes (music starting, directions appearing) simply cross-fade.
+                    val dir = targetState.order.compareTo(initialState.order)
+                    if (dir == 0) {
+                        fadeIn(tween(PAGE_FADE_MS)) togetherWith fadeOut(tween(PAGE_FADE_MS * 2 / 3))
+                    } else {
+                        (
+                            fadeIn(tween(PAGE_SLIDE_MS, delayMillis = 60)) +
+                                slideInHorizontally(tween(PAGE_SLIDE_MS, easing = FastOutSlowInEasing)) { it / 7 * dir } +
+                                scaleIn(tween(PAGE_SLIDE_MS, easing = FastOutSlowInEasing), initialScale = 0.97f)
+                            ) togetherWith (
+                            fadeOut(tween(PAGE_SLIDE_MS / 2)) +
+                                slideOutHorizontally(tween(PAGE_SLIDE_MS, easing = FastOutSlowInEasing)) { -it / 7 * dir }
+                            )
+                    }
+                },
                 label = "layout",
             ) { target ->
                 when (target) {

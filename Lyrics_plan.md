@@ -85,6 +85,7 @@ The web was replaced by the Echo style, prototyped in the mockup:
 - A word sung earlier in a different line that is still showing gets a dotted thread back to it, and the earlier word lights up briefly.
 - The current word's weight grows from light to bold over the time it is held; it arrives with a ring pulse and a spark runs along the line to it.
 - Finished lines shrink slightly toward their centre and fade over 16 s; the view drifts gently toward the current word.
+- When the song's own title is sung, its words get a highlighter stroke that sweeps under them and stay tinted afterwards; once the whole title has been sung, it blooms with a ring and a burst of sparks.
 - Kept from 0.3.1: the visualizer in intros, long breaks and the outro, held-line finales and chorus emphasis.
 
 ## 5. Lyrics data (online build)

@@ -33,6 +33,7 @@ import dev.horizon.lyrics.LYRICS_BREAK_MS
 import dev.horizon.lyrics.LYRICS_HOLD_MS
 import dev.horizon.lyrics.TimedWord
 import dev.horizon.lyrics.countAt
+import dev.horizon.lyrics.titleRuns
 import dev.horizon.media.NowPlaying
 import dev.horizon.ui.theme.Muted
 import dev.horizon.ui.theme.Paper
@@ -60,6 +61,11 @@ private const val SHRINK_MS = 2_500f
 
 /** How many random versions of a line's shape are tried before keeping the clearest. */
 private const val LAYOUT_TRIES = 8
+
+/** The song's name in the lyrics: how long its highlighter takes to sweep, and its burst when complete. */
+private const val TITLE_SWEEP_MS = 450f
+private const val TITLE_BURST_MS = 1_500f
+private const val TITLE_SPARKS = 14
 
 /** A jump of more than this many words (a seek forward) rebuilds from the current line. */
 private const val MAX_CATCH_UP = 12
@@ -120,6 +126,9 @@ private class Shape(val line: Int, val key: String, val pts: List<Offset>, val c
     var shrink = 1f
 }
 
+/** The title, just sung in full: its words and when it landed. */
+private class Burst(val nodes: List<Node>, val shape: Shape, val born: Long)
+
 private class Thread(val a: Node, val aShape: Shape, val b: Node, val bShape: Shape, val born: Long)
 
 private class Sky(val c: Constellation, val from: Int, val pos: List<Offset>, val centre: Offset, val bottom: Float) {
@@ -132,7 +141,12 @@ private class Sky(val c: Constellation, val from: Int, val pos: List<Offset>, va
 }
 
 /** The song's Echo shapes and state, kept for as long as the lyrics are on screen. */
-internal class EchoEngine(private val words: List<TimedWord>) {
+internal class EchoEngine(private val words: List<TimedWord>, title: String = "") {
+    /** Which title run each word belongs to (-1 for none), so the song's own name can shine when sung. */
+    private val titleRun = IntArray(words.size) { -1 }
+    private val titleRuns = words.titleRuns(title)
+    private val bursts = ArrayList<Burst>()
+
     /** Fresh every time, so a song never lays out the same way twice. */
     private val random = Random(System.nanoTime())
     private val wordInLine = IntArray(words.size)
@@ -157,6 +171,7 @@ internal class EchoEngine(private val words: List<TimedWord>) {
     private var sky: Sky? = null
 
     init {
+        titleRuns.forEachIndexed { r, run -> for (i in run) titleRun[i] = r }
         words.forEachIndexed { i, w ->
             val j = lineSize[w.line] ?: 0
             wordInLine[i] = j
@@ -232,6 +247,7 @@ internal class EchoEngine(private val words: List<TimedWord>) {
     }
 
     private fun reset() {
+        bursts.clear()
         layouts.clear()
         shapes.clear()
         threads.clear()
@@ -284,6 +300,12 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         val at = shape.pts[(j - shape.offset).coerceIn(0, shape.pts.size - 1)]
         val node = Node(w, idx, at, now)
         shape.nodes += node
+        // The song's name has just been sung in full: it bursts into light.
+        val run = titleRun[idx]
+        if (run >= 0 && idx == titleRuns[run].last) {
+            val members = shape.nodes.filter { titleRun[it.idx] == run }
+            bursts += Burst(members, shape, now)
+        }
         // A returning line: a thread back to where it was last sung, if that copy is still showing.
         earlier?.nodes?.firstOrNull()?.let { threads += Thread(it, earlier, node, shape, now) }
         // Echo thread: the same word, sung earlier in a different line that is still showing.
@@ -517,6 +539,23 @@ internal class EchoEngine(private val words: List<TimedWord>) {
             }
         }
 
+        // The title, sung in full: a bloom of light and a ring of sparks from the middle of its words.
+        bursts.removeAll { now - it.born > TITLE_BURST_MS || it.shape !in shapes }
+        for (b in bursts) {
+            val k = (now - b.born) / TITLE_BURST_MS
+            val c = b.nodes.fold(Offset.Zero) { acc, n -> acc + at(b.shape, n) / b.nodes.size.toFloat() }
+            val bloom = (70f + 50f * ease(k)) * density
+            drawCircle(Brush.radialGradient(listOf(accent.copy(alpha = 0.45f * (1f - k) * fade), Color.Transparent), c, bloom), bloom, c)
+            if (reduceMotion) continue
+            drawCircle(accent.copy(alpha = 0.7f * (1f - k) * fade), (18f + 150f * ease(k)) * density, c, style = Stroke((2.2f * (1f - k) + 0.4f) * density))
+            for (r in 0 until TITLE_SPARKS) {
+                val a = r * 2f * PI.toFloat() / TITLE_SPARKS + b.born % 628 / 100f
+                val d = (14f + (60f + 40f * (r % 3)) * ease(k)) * density
+                val sp = c + Offset(kotlin.math.cos(a), sin(a)) * d
+                drawCircle(Paper.copy(alpha = (1f - k) * fade), (2.2f * (1f - k) + 0.6f) * density, sp)
+            }
+        }
+
         // The shockwave: a ring that leaves the last word of a held line.
         if (cur != null && finale in 0f..1f && !reduceMotion) {
             val eased = 1f - (1f - finale) * (1f - finale)
@@ -551,13 +590,18 @@ internal class EchoEngine(private val words: List<TimedWord>) {
                 )
                 // An older word that a thread just reached back to lights up for a moment.
                 val echoed = threads.firstOrNull { it.a === n && now - it.born < 2_200 }
+                val isTitle = titleRun[n.idx] >= 0
                 val (size, weight, color) = when {
-                    isCur -> Triple(if (chorus) 38 else 32, heldWeight(n), Paper.copy(alpha = appear * fade))
+                    isCur -> Triple((if (chorus) 38 else 32) + (if (isTitle) 6 else 0), heldWeight(n), Paper.copy(alpha = appear * fade))
+                    isLatest && isTitle -> Triple(if (chorus) 23 else 20, 700, Paper.copy(alpha = fade))
                     isLatest -> Triple(if (chorus) 20 else 17, 600, Paper.copy(alpha = (0.85f + 0.15f * swell) * fade))
                     echoed != null -> Triple(15, 600, accent.copy(alpha = (0.15f + 0.8f * (1f - (now - echoed.born) / 2_200f)) * fade))
+                    isTitle -> Triple(14, 600, accent.copy(alpha = min(1f, alpha * 1.4f)))
                     else -> Triple(13, 500, Muted.copy(alpha = min(1f, alpha * 1.6f)))
                 }
-                label(measurer, n, p, size, weight, color, if (isCur) 14f else 9f, isCur, accent)
+                // The song's own name gets a highlighter stroke that sweeps under it as it is sung.
+                val highlight = if (isTitle) ease((now - n.born) / TITLE_SWEEP_MS) * (if (isLatest) 1f else 0.5f) else 0f
+                label(measurer, n, p, size, weight, color, if (isCur) 14f else 9f, isCur, accent, highlight = highlight)
             }
         }
     }
@@ -702,6 +746,7 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         isCurrent: Boolean,
         accent: Color,
         placed: MutableList<FloatArray>? = null,
+        highlight: Float = 0f,
     ) {
         val layout = n.layouts.getOrPut(size * 1000 + weight) {
             measurer.measure(n.word.text, TextStyle(fontSize = size.sp, fontWeight = FontWeight(weight)), density = Density(density, fontScale))
@@ -716,6 +761,15 @@ internal class EchoEngine(private val words: List<TimedWord>) {
         if (!isCurrent && hits(box(right))) return
         placed?.add(box(right))
         val topLeft = Offset(if (right) p.x + gap else p.x - gap - w, p.y - h / 2f)
+        if (highlight > 0f) {
+            val pad = 3f * density
+            drawRoundRect(
+                accent.copy(alpha = 0.32f * highlight * color.alpha),
+                topLeft = topLeft + Offset(-pad, h * 0.5f),
+                size = androidx.compose.ui.geometry.Size((w + pad * 2) * highlight, h * 0.42f),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(h * 0.2f),
+            )
+        }
         if (isCurrent) {
             // A soft glow behind the word being sung.
             drawText(layout, color = accent.copy(alpha = 0.35f * color.alpha), topLeft = topLeft + Offset(0f, 1f * density))

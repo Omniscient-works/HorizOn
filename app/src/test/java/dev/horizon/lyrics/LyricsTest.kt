@@ -90,6 +90,14 @@ class TimedWordsTest {
 }
 
 class TitleCleanerTest {
+    @Test fun `soundtrack and featured-artist extras are dropped`() = assertEquals(
+        "Flower In A Hurricane",
+        TitleCleaner.clean(
+            "Flower In A Hurricane [From GTAVI: Original Score] (feat. King Gizzard & the Lizard Wizard)",
+            "Justice, Tame Impala, SZA & Grand Theft Auto VI",
+        ).title,
+    )
+
     @Test fun `video labels are dropped`() =
         assertEquals(SongName("Song Title", "Artist"), TitleCleaner.clean("Song Title (Official Video)", "Artist"))
 

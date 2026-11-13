@@ -2,11 +2,15 @@ package dev.horizon.ui.lyrics
 
 import android.os.SystemClock
 import android.provider.Settings
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -121,7 +125,7 @@ fun LyricsPage(
     // Before the first word and in long breaks the web has nothing to draw, so the visualizer fills in.
     val words = remember(synced) { synced?.lyrics?.timedWords().orEmpty() }
     // Kept here rather than in the web, so the song's shapes outlive the visualizer filling a break.
-    val engine = remember(words) { words.takeIf { it.isNotEmpty() }?.let { EchoEngine(it) } }
+    val engine = remember(words) { words.takeIf { it.isNotEmpty() }?.let { EchoEngine(it, nowPlaying.title) } }
     // Worked out during composition, so it is right on the very frame the song or its lyrics change.
     val tick by produceState(0L) {
         while (true) {
@@ -150,7 +154,18 @@ fun LyricsPage(
                 customActions = listOf(CustomAccessibilityAction("Open ${nowPlaying.appLabel ?: "music app"}") { onOpenApp(); true })
             },
     ) {
-        Crossfade(synced?.lyrics?.takeIf { wait == null }, label = "lyrics", modifier = Modifier.fillMaxSize()) { lyrics ->
+        // Lyrics and the visualizer hand over softly: the incoming one rises out of a slight zoom
+        // while the outgoing one drifts forward and fades.
+        AnimatedContent(
+            synced?.lyrics?.takeIf { wait == null },
+            transitionSpec = {
+                (fadeIn(tween(700, delayMillis = 120)) + scaleIn(tween(900, easing = FastOutSlowInEasing), initialScale = 0.94f)) togetherWith
+                    (fadeOut(tween(450)) + scaleOut(tween(650, easing = FastOutSlowInEasing), targetScale = 1.05f))
+            },
+            contentKey = { it != null },
+            label = "lyrics",
+            modifier = Modifier.fillMaxSize(),
+        ) { lyrics ->
             if (lyrics != null) {
                 if (engine != null) LyricsWeb(engine, nowPlaying, colors.accent, reduceMotion, Modifier.fillMaxSize())
             } else {
@@ -226,7 +241,7 @@ private fun Header(nowPlaying: NowPlaying, time: String, label: String?, accent:
             Box(Modifier.size(30.dp).clip(shape).background(Brush.linearGradient(listOf(accent, Color.Black))).artOutline(shape))
         }
         Column(Modifier.weight(1f)) {
-            Text(nowPlaying.title, color = Paper, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(nowPlaying.displayTitle, color = Paper, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
             nowPlaying.artist?.let {
                 Text(it, color = Muted, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
