@@ -138,7 +138,8 @@ Colour changes animate over 600 ms, as the card tint already does.
 ## 7. Visualizer (no lyrics, and the offline build)
 
 `ui/lyrics/Visualizer.kt`:
-- A small galaxy, seen tilted: two spiral arms of stars in colours taken from the album's accent (pale and warm at the core, the accent, then cooler neighbours on the colour wheel) turn slowly around the cover, which sits at the core as a planet with a lit side and a glowing rim. The near half of the disc passes in front of the planet. Background stars drift at three depths and twinkle; now and then a shooting star crosses. Everything else stays black, and the page runs edge to edge under the camera cutout.
+- A small galaxy, seen tilted, with nebula clouds, a bright layered core and a drifting dust lane: two spiral arms of stars in colours taken from the album's accent (pale and warm at the core, the accent, then cooler neighbours on the colour wheel) turn slowly around the cover, which sits at the core as a planet with a lit side and a glowing rim. The near half of the disc passes in front of the planet. Background stars drift at three depths and twinkle; now and then a shooting star crosses. Everything else stays black, and the page runs edge to edge under the camera cutout.
+- When the song changes, the galaxy whirls up, collapses toward the core and blooms back out in the new song's colours.
 - **Movement:** the galaxy turns with the playback position, inner stars faster than outer ones, and the core glow and stars swell on a pulse that repeats at an assumed 118 BPM. Paused, it all but stops.
 - A soft accent glow behind the cover swells with the pulse.
 - No microphone permission and no audio capture. A later, optional "React to the music" switch could use Android's `Visualizer` API, which needs the microphone permission and returns silence on some phones (several Xiaomi models). Not in this plan.

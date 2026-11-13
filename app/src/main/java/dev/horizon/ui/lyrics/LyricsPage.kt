@@ -22,10 +22,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -176,9 +178,15 @@ fun LyricsPage(
             }
         }
 
-        // Words and controls keep clear of the camera cutout; the picture behind runs edge to edge.
-        Box(Modifier.matchParentSize().windowInsetsPadding(WindowInsets.displayCutout)) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 24.dp)) {
+        // The picture runs edge to edge; the overlays stay centred on the screen. Only the header,
+        // which sits at the top corner, is inset past the camera cutout so it can't tuck under it.
+        Box(Modifier.matchParentSize()) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .windowInsetsPadding(WindowInsets.displayCutout.only(WindowInsetsSides.Horizontal))
+                    .padding(horizontal = 32.dp, vertical = 24.dp),
+            ) {
                 Header(nowPlaying, time, if (synced != null) "LYRICS" else null, colors.accent)
                 AnimatedVisibility(scrubVisible, enter = fadeIn(), exit = fadeOut()) {
                     SongPosition(nowPlaying, colors.accent, Modifier.padding(top = 14.dp))

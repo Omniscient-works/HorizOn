@@ -62,7 +62,7 @@ private const val FADE_MS = 16_000f
 private const val SHRINK_MS = 2_500f
 
 /** How many random versions of a line's shape are tried before keeping the clearest. */
-private const val LAYOUT_TRIES = 8
+private const val LAYOUT_TRIES = 12
 
 /** The song's name in the lyrics: how long its highlighter takes to sweep, and its burst when complete. */
 private const val TITLE_SWEEP_MS = 450f
@@ -355,10 +355,10 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
      * versions are tried, keeping the one that stays clearest of the other words.
      */
     private fun layoutLine(count: Int): List<Offset> {
-        val left = width * 0.09f
-        val right = width * 0.83f
-        val top = height * 0.27f
-        val bottom = height * 0.84f
+        val left = width * 0.07f
+        val right = width * 0.9f
+        val top = height * 0.24f
+        val bottom = height * 0.86f
         val skyPts = sky?.pos.orEmpty()
         val others = shapes.flatMap { it.pts } + skyPts
         val centres = shapes.map { it.centre } + listOfNotNull(sky?.centre)
@@ -401,7 +401,7 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
         // Set off roughly toward the open middle, at a random slant.
         var heading = atan2((top + bottom) / 2 - origin.y, (left + right) / 2 - origin.x) + (random.nextFloat() - 0.5f) * 2.4f
         val style = random.nextInt(100)
-        val step = (46f + random.nextFloat() * 34f) * density
+        val step = (58f + random.nextFloat() * 42f) * density
         val turn = (0.2f + random.nextFloat() * 0.35f) * (if (random.nextBoolean()) 1f else -1f)
         val waveAmp = 0.35f + random.nextFloat() * 0.6f
         val waveFreq = 0.8f + random.nextFloat() * 1.1f
@@ -437,10 +437,10 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
 
     /** Moves a remembered shape to a fresh spot, as far as it can from what is showing and from where it was. */
     private fun moveShape(template: List<Offset>): List<Offset> {
-        val left = width * 0.09f
-        val right = width * 0.83f
-        val top = height * 0.27f
-        val bottom = height * 0.84f
+        val left = width * 0.07f
+        val right = width * 0.9f
+        val top = height * 0.24f
+        val bottom = height * 0.86f
         val minX = template.minOf { it.x }
         val maxX = template.maxOf { it.x }
         val minY = template.minOf { it.y }
@@ -601,7 +601,10 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
             }
         }
 
-        // Words and their points.
+        // Words and their points. The dots are drawn first; then the labels, most important first,
+        // so that when two would overlap the older, fainter one steps aside (the live words never do).
+        data class Lbl(val n: Node, val p: Offset, val size: Int, val weight: Int, val color: Color, val gap: Float, val isCur: Boolean, val highlight: Float, val prio: Int)
+        val labels = ArrayList<Lbl>(words.size)
         for (s in shapes) {
             val isLatest = s === latest && cur != null
             for (n in s.nodes) {
@@ -622,20 +625,26 @@ internal class EchoEngine(private val words: List<TimedWord>, title: String = ""
                 // An older word that a thread just reached back to lights up for a moment.
                 val echoed = threads.firstOrNull { it.a === n && now - it.born < 2_200 }
                 val isTitle = titleRun[n.idx] >= 0
-                val (size, weight, color) = when {
-                    isCur -> Triple((if (chorus) 38 else 32) + (if (isTitle) 6 else 0), heldWeight(n), Paper.copy(alpha = appear * fade))
-                    isLatest && isTitle -> Triple(if (chorus) 23 else 20, 700, Paper.copy(alpha = fade))
-                    isLatest -> Triple(if (chorus) 20 else 17, 600, Paper.copy(alpha = (0.85f + 0.15f * swell) * fade))
-                    echoed != null -> Triple(15, 600, accent.copy(alpha = (0.15f + 0.8f * (1f - (now - echoed.born) / 2_200f)) * fade))
-                    isTitle -> Triple(14, 600, accent.copy(alpha = min(1f, alpha * 1.4f)))
-                    else -> Triple(13, 500, Muted.copy(alpha = min(1f, alpha * 1.6f)))
+                val (size, weight, color, prio) = when {
+                    isCur -> Quad((if (chorus) 38 else 32) + (if (isTitle) 6 else 0), heldWeight(n), Paper.copy(alpha = appear * fade), 0)
+                    isLatest && isTitle -> Quad(if (chorus) 23 else 20, 700, Paper.copy(alpha = fade), 1)
+                    isLatest -> Quad(if (chorus) 20 else 17, 600, Paper.copy(alpha = (0.85f + 0.15f * swell) * fade), 1)
+                    echoed != null -> Quad(15, 600, accent.copy(alpha = (0.15f + 0.8f * (1f - (now - echoed.born) / 2_200f)) * fade), 2)
+                    isTitle -> Quad(14, 600, accent.copy(alpha = min(1f, alpha * 1.4f)), 3)
+                    else -> Quad(13, 500, Muted.copy(alpha = min(1f, alpha * 1.6f)), 4)
                 }
                 // The song's own name gets a highlighter stroke that sweeps under it as it is sung.
                 val highlight = if (isTitle) ease((now - n.born) / TITLE_SWEEP_MS) * (if (isLatest) 1f else 0.5f) else 0f
-                label(measurer, n, p, size, weight, color, if (isCur) 14f else 9f, isCur, accent, highlight = highlight)
+                labels += Lbl(n, p, size, weight, color, if (isCur) 14f else 9f, isCur, highlight, prio)
             }
         }
+        val placed = ArrayList<FloatArray>(labels.size)
+        for (l in labels.sortedBy { it.prio }) {
+            label(measurer, l.n, l.p, l.size, l.weight, l.color, l.gap, l.isCur, accent, placed, l.highlight)
+        }
     }
+
+    private data class Quad(val a: Int, val b: Int, val c: Color, val d: Int)
 
     // ---- The rare constellation ---------------------------------------------------------------
 

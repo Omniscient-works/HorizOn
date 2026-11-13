@@ -13,6 +13,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
@@ -21,12 +22,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
@@ -38,6 +41,7 @@ import dev.horizon.ui.theme.Paper
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.exp
+import kotlin.math.hypot
 import kotlin.math.ln
 import kotlin.math.pow
 import kotlin.math.sin
@@ -47,16 +51,22 @@ import kotlin.random.Random
 private const val BPM = 118f
 
 /** Background stars, spread over three depths. */
-private const val STARS = 170
+private const val STARS = 190
 
 /** Stars in the galaxy's spiral arms. */
-private const val ARM_STARS = 720
+private const val ARM_STARS = 820
+
+/** Soft coloured nebula clouds along the disc. */
+private const val NEBULAE = 7
 
 /** How flat the galaxy's disc looks from here (1 = face on). */
 private const val TILT = 0.5f
 
 /** A shooting star crosses every this many seconds or so. */
-private const val METEOR_EVERY_S = 11f
+private const val METEOR_EVERY_S = 9f
+
+/** How long the whirl-and-bloom takes when the song changes. */
+private const val SWAP_MS = 1_150f
 
 /** 0..1 pulse that peaks on each beat and decays; flat while paused. */
 internal fun beatPulse(seconds: Float, playing: Boolean, bpm: Float = BPM): Float {
@@ -75,19 +85,27 @@ private fun Color.shiftHue(degrees: Float, lighten: Float = 0f): Color {
     return Color(android.graphics.Color.HSVToColor(hsv))
 }
 
-/** A background star: where it sits (0..1), how deep (0 far .. 1 near), and its twinkle. */
-private class Star(val x: Float, val y: Float, val depth: Float, val phase: Float, val warm: Boolean)
+private fun paletteOf(accent: Color) =
+    listOf(accent.shiftHue(10f, 0.85f), accent.shiftHue(0f, 0.45f), accent, accent.shiftHue(-24f, 0.25f), accent.shiftHue(34f, 0.5f))
 
-/** A star in the galaxy: its distance from the core (0..1), angle, and colour band. */
+/** A background star: where it sits (0..1), how deep (0 far .. 1 near), its twinkle, and the rare bright one. */
+private class Star(val x: Float, val y: Float, val depth: Float, val phase: Float, val warm: Boolean, val bright: Boolean)
+
+/** A star in the galaxy: its distance from the core (0..1), angle, colour band, and whether it's loose fill. */
 private class ArmStar(val r: Float, val angle: Float, val size: Float, val band: Int, val phase: Float, val loose: Boolean)
+
+/** A soft colour cloud sitting on the disc at radius [r] and angle, carried round with the arms. */
+private class Nebula(val r: Float, val angle: Float, val size: Float, val band: Int)
 
 /**
  * Shown when a song has no lyrics (and always in the offline build): a small galaxy. Its spiral
- * arms, in colours drawn from the album's [accent], turn slowly around the cover, which sits at the
- * core like a planet with a glowing rim. Stars drift past at three depths and twinkle on the beat,
- * and now and then a shooting star crosses. The rest stays black for OLED screens. It does not
- * listen to the audio, which would need the microphone permission (Lyrics_plan.md, section 7);
- * it follows the playback position instead, so the galaxy all but stops while paused.
+ * arms, nebula clouds and a bright core, all in colours drawn from the album's [accent], turn
+ * slowly around the cover, which sits at the heart like a planet with a glowing rim. Stars drift
+ * past at three depths and twinkle on the beat, and now and then a shooting star crosses. When the
+ * song changes the whole galaxy whirls up, collapses toward the core and blooms back out in the new
+ * song's colours. The rest stays black for OLED screens. It does not listen to the audio, which
+ * would need the microphone permission (Lyrics_plan.md, section 7); it follows the playback
+ * position instead, so the galaxy all but stops while paused.
  */
 @Composable
 fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modifier) {
@@ -96,15 +114,28 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
     LaunchedEffect(Unit) {
         while (true) withFrameMillis { frame = it }
     }
-    // Core to rim: pale and warm, the accent, then a cooler neighbour on the colour wheel.
-    val palette = remember(accent) {
-        listOf(accent.shiftHue(8f, 0.8f), accent.shiftHue(0f, 0.4f), accent, accent.shiftHue(-22f, 0.25f), accent.shiftHue(30f, 0.45f))
+    // A song change whirls the old galaxy into the core and blooms the new one out. We blend from
+    // the palette we're settled in, and when the change began, and read a 0..1 progress each frame.
+    val newPalette = remember(accent) { paletteOf(accent) }
+    var fromPalette by remember { mutableStateOf(newPalette) }
+    var swapAt by remember { mutableLongStateOf(-1L) }
+    var firstSong by remember { mutableStateOf(true) }
+    val artKey = nowPlaying.art?.let { "${it.width}x${it.height}@${it.generationId}" } ?: nowPlaying.title
+    LaunchedEffect(artKey) {
+        if (!firstSong) {
+            // fromPalette still holds the previous song's colours; whirl, then settle into the new.
+            swapAt = SystemClock.elapsedRealtime()
+            kotlinx.coroutines.delay(SWAP_MS.toLong())
+        }
+        firstSong = false
+        fromPalette = newPalette
     }
+
     // A fresh sky each time the visualizer appears.
     val seed = remember { System.nanoTime() }
     val stars = remember(seed) {
         val r = Random(seed)
-        List(STARS) { Star(r.nextFloat(), r.nextFloat(), r.nextFloat().let { it * it }, r.nextFloat() * 6.28f, r.nextFloat() < 0.25f) }
+        List(STARS) { Star(r.nextFloat(), r.nextFloat(), r.nextFloat().let { it * it }, r.nextFloat() * 6.28f, r.nextFloat() < 0.25f, r.nextFloat() < 0.06f) }
     }
     val arms = remember(seed) {
         val r = Random(seed + 1)
@@ -120,7 +151,16 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             ArmStar(rad, arm + scatter, size, band, r.nextFloat() * 6.28f, loose)
         }
     }
+    val nebulae = remember(seed) {
+        val r = Random(seed + 2)
+        List(NEBULAE) {
+            val rad = 0.25f + r.nextFloat() * 0.7f
+            Nebula(rad, if (r.nextBoolean()) 0f else PI.toFloat() + (r.nextFloat() - 0.5f) * 1.2f, 0.4f + r.nextFloat() * 0.7f, (1 + r.nextInt(4)))
+        }
+    }
     fun pulse(): Float = beatPulse(track.positionAt(SystemClock.elapsedRealtime()) / 1000f, track.isPlaying)
+    // 0 while settled; 0..1 during a song change.
+    fun swap(now: Long): Float = if (swapAt <= 0L) 0f else ((now - swapAt) / SWAP_MS).coerceIn(0f, 1f)
 
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
         val coverSize = min(maxWidth, maxHeight) * 0.24f
@@ -130,17 +170,23 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             // Song time drives the motion, so it rests with the music; a slow drift keeps it alive.
             val t = track.positionAt(now) / 1000f + now / 1000f * 0.03f
             val beat = pulse()
-            val w = size.width
-            val h = size.height
-            val centre = Offset(w / 2, h / 2)
+            val sw = swap(now)
+            // The whirl: spin races up and eases out; the disc collapses toward the core at the
+            // half-way point, where the colours cross over, then blooms back out.
+            val whirl = sin(sw * PI.toFloat()).pow(0.6f)
+            val extraSpin = whirl * 5.5f
+            val discScale = 1f - whirl * 0.9f
+            val pal = lerpPalette(fromPalette, newPalette, smoothstep(0.42f, 0.62f, sw))
+            val centre = Offset(size.width / 2, size.height / 2)
             val cover = coverSize.toPx()
 
             drawStarfield(stars, t, beat)
-            drawGalaxy(arms, palette, centre, cover, t, beat, back = true)
-            // The core's light, behind the planet.
-            val core = cover * (1.5f + 0.25f * beat)
-            drawCircle(Brush.radialGradient(listOf(palette[0].copy(alpha = 0.35f + 0.2f * beat), accent.copy(alpha = 0.12f), Color.Transparent), centre, core), core, centre)
-            drawMeteor(seed, now, palette[0])
+            drawGalaxy(arms, nebulae, pal, centre, cover, t, beat, extraSpin, discScale, back = true)
+            // The core's light, behind the planet, flaring at the crossover.
+            val flare = 1f + whirl * 1.1f
+            val core = cover * (1.5f + 0.25f * beat) * flare * discScale.coerceAtLeast(0.2f)
+            drawCircle(Brush.radialGradient(listOf(pal[0].copy(alpha = (0.34f + 0.18f * beat + 0.4f * whirl).coerceAtMost(1f)), pal[2].copy(alpha = 0.12f), Color.Transparent), centre, core), core, centre)
+            drawMeteor(seed, now, pal[0])
         }
         Planet(
             nowPlaying.art,
@@ -149,9 +195,15 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
                 .size(coverSize)
                 .graphicsLayer {
                     if (frame < 0L) return@graphicsLayer
-                    val s = 1f + pulse() * 0.03f
+                    val now = SystemClock.elapsedRealtime()
+                    val sw = swap(now)
+                    val whirl = sin(sw * PI.toFloat()).toFloat().pow(0.6f)
+                    // The planet shrinks into the core and spins with the galaxy, then grows back.
+                    val s = (1f + pulse() * 0.03f) * (1f - whirl * 0.92f)
                     scaleX = s
                     scaleY = s
+                    rotationZ = whirl * 220f
+                    alpha = (1f - whirl * 0.4f)
                 },
         )
         // The near half of the galaxy passes in front of the planet.
@@ -159,35 +211,77 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             if (frame < 0L) return@Canvas
             val now = SystemClock.elapsedRealtime()
             val t = track.positionAt(now) / 1000f + now / 1000f * 0.03f
-            drawGalaxy(arms, palette, Offset(size.width / 2, size.height / 2), coverSize.toPx(), t, pulse(), back = false)
+            val sw = swap(now)
+            val whirl = sin(sw * PI.toFloat()).pow(0.6f)
+            val pal = lerpPalette(fromPalette, newPalette, smoothstep(0.42f, 0.62f, sw))
+            drawGalaxy(arms, nebulae, pal, Offset(size.width / 2, size.height / 2), coverSize.toPx(), t, pulse(), whirl * 5.5f, 1f - whirl * 0.9f, back = false)
             // The planet's atmosphere: a thin rim of light.
-            val rim = coverSize.toPx() / 2f
-            drawCircle(accent.copy(alpha = 0.45f), rim + 1.5f * density, Offset(size.width / 2, size.height / 2), style = Stroke(2f * density))
+            val rim = coverSize.toPx() / 2f * (1f - whirl * 0.92f)
+            drawCircle(pal[2].copy(alpha = 0.45f * (1f - whirl)), rim + 1.5f * density, Offset(size.width / 2, size.height / 2), style = Stroke(2f * density))
         }
     }
 }
 
-/** Stars at three depths drift slowly sideways (nearer ones faster) and twinkle, more on the beat. */
+/** Blends 0 below [from], 1 above [to], smoothly between. */
+private fun smoothstep(from: Float, to: Float, x: Float): Float {
+    val t = ((x - from) / (to - from)).coerceIn(0f, 1f)
+    return t * t * (3f - 2f * t)
+}
+
+private fun lerpPalette(a: List<Color>, b: List<Color>, f: Float): List<Color> =
+    if (f <= 0f) a else if (f >= 1f) b else List(a.size) { lerp(a[it], b[it], f) }
+
+/**
+ * Stars at three depths drift slowly sideways (nearer ones faster) and twinkle, more on the beat.
+ * A few bright ones get a soft cross-shaped glint.
+ */
 private fun DrawScope.drawStarfield(stars: List<Star>, t: Float, beat: Float) {
     for (s in stars) {
         val speed = 0.004f + 0.02f * s.depth
         val x = ((s.x - t * speed) % 1f + 1f) % 1f * size.width
         val y = s.y * size.height
         val twinkle = 0.55f + 0.45f * sin(t * (1.2f + s.depth * 2f) + s.phase)
-        val alpha = (0.15f + 0.6f * s.depth) * twinkle + 0.25f * beat * s.depth
+        val alpha = ((0.15f + 0.6f * s.depth) * twinkle + 0.25f * beat * s.depth).coerceIn(0f, 1f)
         val color = if (s.warm) Color(0xFFFFE2B8) else Color(0xFFDCE6FF)
-        drawCircle(color.copy(alpha = alpha.coerceIn(0f, 1f)), (0.5f + 1.3f * s.depth) * density, Offset(x, y))
+        val rad = (0.5f + 1.3f * s.depth) * density
+        drawCircle(color.copy(alpha = alpha), rad, Offset(x, y))
+        if (s.bright) {
+            val g = rad * (3.5f + 2f * twinkle + 2f * beat)
+            drawLine(color.copy(alpha = alpha * 0.5f), Offset(x - g, y), Offset(x + g, y), 0.8f * density)
+            drawLine(color.copy(alpha = alpha * 0.5f), Offset(x, y - g), Offset(x, y + g), 0.8f * density)
+        }
     }
 }
 
 /**
  * The spiral galaxy, seen tilted, centred on [centre]. Drawn in two passes: the far half ([back])
- * before the planet, the near half after it, so the arms wrap around it.
+ * before the planet, the near half after it, so the arms wrap around it. [extraSpin] whirls it on a
+ * song change and [discScale] collapses it toward the core.
  */
-private fun DrawScope.drawGalaxy(arms: List<ArmStar>, palette: List<Color>, centre: Offset, cover: Float, t: Float, beat: Float, back: Boolean) {
-    val radius = minOf(size.width * 0.36f, size.height * 0.82f)
-    val inner = cover * 0.55f
-    val spin = t * 0.09f
+private fun DrawScope.drawGalaxy(
+    arms: List<ArmStar>,
+    nebulae: List<Nebula>,
+    palette: List<Color>,
+    centre: Offset,
+    cover: Float,
+    t: Float,
+    beat: Float,
+    extraSpin: Float,
+    discScale: Float,
+    back: Boolean,
+) {
+    val radius = minOf(size.width * 0.36f, size.height * 0.82f) * discScale
+    val inner = cover * 0.55f * discScale.coerceAtLeast(0.25f)
+    val spin = t * 0.09f + extraSpin
+    // Soft nebula clouds first, so the stars sit in front of them.
+    for (nb in nebulae) {
+        val r = inner + (radius - inner) * nb.r
+        val a = nb.angle + ln(1f + nb.r * 8f) * 2.9f + spin * (1.3f - 0.6f * nb.r)
+        if ((sin(a) < 0f) != back) continue
+        val p = centre + Offset(cos(a) * r, sin(a) * r * TILT)
+        val blob = nb.size * cover * (0.9f + 0.2f * beat)
+        drawCircle(Brush.radialGradient(listOf(palette[nb.band].copy(alpha = 0.07f + 0.04f * beat), Color.Transparent), p, blob), blob, p)
+    }
     for (s in arms) {
         // A logarithmic spiral: farther stars trail further behind as the galaxy turns.
         val r = inner + (radius - inner) * s.r
@@ -199,17 +293,23 @@ private fun DrawScope.drawGalaxy(arms: List<ArmStar>, palette: List<Color>, cent
         val depth = if (back) 0.65f else 1f
         val twinkle = 0.6f + 0.4f * sin(t * 1.7f + s.phase)
         val alpha = (0.85f - 0.45f * s.r) * twinkle * depth * (if (s.loose) 0.45f else 1f) + 0.3f * beat * (1f - s.r)
-        val color = palette[s.band]
-        drawCircle(color.copy(alpha = alpha.coerceIn(0f, 1f)), s.size * density * (0.8f + 0.2f * depth) * (1f + 0.25f * beat), p)
+        drawCircle(palette[s.band].copy(alpha = alpha.coerceIn(0f, 1f)), s.size * density * (0.8f + 0.2f * depth) * (1f + 0.25f * beat), p)
     }
-    // A faint dusty glow along the disc.
+    // A faint dusty glow along the disc, and a darker dust lane threading through an arm.
     if (back) {
-        val glow = radius * 0.9f
+        val glow = radius * 0.95f
         drawOval(
             Brush.radialGradient(listOf(palette[2].copy(alpha = 0.10f + 0.06f * beat), Color.Transparent), centre, glow),
             topLeft = Offset(centre.x - glow, centre.y - glow * TILT),
-            size = androidx.compose.ui.geometry.Size(glow * 2, glow * 2 * TILT),
+            size = Size(glow * 2, glow * 2 * TILT),
         )
+        rotate(degrees = (spin * 18f), pivot = centre) {
+            drawOval(
+                Brush.radialGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.22f), Color.Transparent), centre, glow * 0.8f),
+                topLeft = Offset(centre.x - glow * 0.8f, centre.y - 3f * density),
+                size = Size(glow * 1.6f, 6f * density),
+            )
+        }
     }
 }
 
@@ -223,13 +323,13 @@ private fun DrawScope.drawMeteor(seed: Long, now: Long, color: Color) {
     val k = (now % period.toLong()) / 900f
     if (k >= 1f) return
     val r = Random(seed xor n)
-    if (r.nextFloat() < 0.35f) return // Some periods pass without one.
+    if (r.nextFloat() < 0.3f) return // Some periods pass without one.
     val start = Offset(size.width * (0.15f + r.nextFloat() * 0.7f), size.height * (r.nextFloat() * 0.35f))
     val angle = (0.35f + r.nextFloat() * 0.5f) * (if (r.nextBoolean()) 1f else -1f) + PI.toFloat() / 2f
     val dir = Offset(cos(angle), sin(angle))
-    val travel = size.minDimension * 0.55f
+    val travel = hypot(size.width, size.height) * 0.4f
     val head = start + dir * (travel * k)
-    val tail = head - dir * (90f * density * (1f - k * 0.5f))
+    val tail = head - dir * (110f * density * (1f - k * 0.5f))
     val fade = sin(k * PI.toFloat())
     drawLine(Brush.linearGradient(listOf(Color.Transparent, color.copy(alpha = 0.9f * fade)), tail, head), tail, head, 1.6f * density, StrokeCap.Round)
     drawCircle(lerp(color, Paper, 0.5f).copy(alpha = fade), 1.8f * density, head)

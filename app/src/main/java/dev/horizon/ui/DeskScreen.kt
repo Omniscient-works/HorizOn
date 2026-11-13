@@ -333,7 +333,12 @@ fun DeskScreen(onClose: () -> Unit) {
         Box(
             Modifier
                 .fillMaxSize()
-                .offset(shiftX.dp, shiftY.dp),
+                // Burn-in pixel shift, except on the lyrics page: it's all motion, nothing static to
+                // burn in, and a shifting canvas there would only look like a wobble.
+                .offset(
+                    if (layout == DeskLayout.Lyrics) 0.dp else shiftX.dp,
+                    if (layout == DeskLayout.Lyrics) 0.dp else shiftY.dp,
+                ),
         ) {
             // Wait for the stored face before drawing, so the wrong one never flashes up.
             val currentFace = face ?: return@Box
