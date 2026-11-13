@@ -28,8 +28,8 @@ class ConstellationsTest {
     @Test fun `rare`() {
         val random = Random(7)
         val hits = (1..100_000).count { ConstellationEgg.roll(random) != null }
-        // About 1 in 100: 1000 expected.
-        assertTrue("$hits", hits in 880..1120)
+        // About 1 in 25: 4000 expected.
+        assertTrue("$hits", hits in 3750..4250)
     }
 
     @Test fun `debug builds can force one, once`() {

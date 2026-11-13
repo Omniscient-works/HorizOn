@@ -23,8 +23,8 @@ android {
         applicationId = "dev.horizon"
         minSdk = 26
         targetSdk = 37
-        versionCode = 9
-        versionName = "0.4.4"
+        versionCode = 10
+        versionName = "0.4.5"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
