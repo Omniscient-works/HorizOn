@@ -333,7 +333,6 @@ fun DeskScreen(onClose: () -> Unit) {
         Box(
             Modifier
                 .fillMaxSize()
-                .windowInsetsPadding(WindowInsets.displayCutout)
                 .offset(shiftX.dp, shiftY.dp),
         ) {
             // Wait for the stored face before drawing, so the wrong one never flashes up.
@@ -379,77 +378,82 @@ fun DeskScreen(onClose: () -> Unit) {
                 },
                 label = "layout",
             ) { target ->
-                when (target) {
-                    DeskLayout.Split -> {
-                        SplitLayout(currentFace, time, date, battery, nav, { directions(it, dateAndTime) }, prompt, headsetSlot) {
-                            val playing = nowPlaying
-                            if (playing != null) {
-                                PlayerCard(
-                                    nowPlaying = playing,
-                                    onPlayPause = media::playPause,
-                                    onPrevious = media::skipPrevious,
-                                    onNext = media::skipNext,
-                                    onTap = { controlsVisible = !controlsVisible },
-                                    onOpenApp = { activity?.let(media::openPlayerApp) },
-                                    onSeek = media::seekTo,
-                                )
-                            } else {
-                                MusicAccessCard(
-                                    onAllow = ::openAccessSettings,
-                                    onNotNow = { scope.launch { settings.setMusicPromptDismissed(true) } },
-                                )
+                // Everything keeps clear of the camera cutout, except the lyrics page, whose stars and
+                // lyrics run edge to edge (its text keeps clear by itself).
+                val cutout = if (target == DeskLayout.Lyrics) Modifier else Modifier.windowInsetsPadding(WindowInsets.displayCutout)
+                Box(Modifier.fillMaxSize().then(cutout)) {
+                    when (target) {
+                        DeskLayout.Split -> {
+                            SplitLayout(currentFace, time, date, battery, nav, { directions(it, dateAndTime) }, prompt, headsetSlot) {
+                                val playing = nowPlaying
+                                if (playing != null) {
+                                    PlayerCard(
+                                        nowPlaying = playing,
+                                        onPlayPause = media::playPause,
+                                        onPrevious = media::skipPrevious,
+                                        onNext = media::skipNext,
+                                        onTap = { controlsVisible = !controlsVisible },
+                                        onOpenApp = { activity?.let(media::openPlayerApp) },
+                                        onSeek = media::seekTo,
+                                    )
+                                } else {
+                                    MusicAccessCard(
+                                        onAllow = ::openAccessSettings,
+                                        onNotNow = { scope.launch { settings.setMusicPromptDismissed(true) } },
+                                    )
+                                }
                             }
                         }
-                    }
-                    DeskLayout.Directions -> {
-                        // Keep showing the last directions while the layout fades out.
-                        val current = nav ?: navState
-                        // Directions where the clock usually is, and the clock where the music would be.
-                        Row(Modifier.fillMaxSize()) {
-                            Box(
-                                Modifier
-                                    .weight(1.1f)
-                                    .fillMaxHeight()
-                                    .padding(start = 40.dp, end = 12.dp, top = 28.dp, bottom = 28.dp),
-                            ) {
-                                if (current != null) directions(current, date)
-                            }
-                            Crossfade(
-                                currentFace,
-                                label = "clockFace",
-                                modifier = Modifier
-                                    .weight(0.9f)
-                                    .fillMaxHeight()
-                                    .padding(top = 20.dp, bottom = 20.dp, end = 24.dp),
-                            ) {
-                                ClockFaceContent(it, time)
+                        DeskLayout.Directions -> {
+                            // Keep showing the last directions while the layout fades out.
+                            val current = nav ?: navState
+                            // Directions where the clock usually is, and the clock where the music would be.
+                            Row(Modifier.fillMaxSize()) {
+                                Box(
+                                    Modifier
+                                        .weight(1.1f)
+                                        .fillMaxHeight()
+                                        .padding(start = 40.dp, end = 12.dp, top = 28.dp, bottom = 28.dp),
+                                ) {
+                                    if (current != null) directions(current, date)
+                                }
+                                Crossfade(
+                                    currentFace,
+                                    label = "clockFace",
+                                    modifier = Modifier
+                                        .weight(0.9f)
+                                        .fillMaxHeight()
+                                        .padding(top = 20.dp, bottom = 20.dp, end = 24.dp),
+                                ) {
+                                    ClockFaceContent(it, time)
+                                }
                             }
                         }
-                    }
-                    DeskLayout.Clock -> {
-                        FullLayout(
-                            currentFace, time, date, battery, nowPlaying, nav, prompt, headsetSlot,
-                            onShowPlayer = { page = DeskPage.Main },
-                            onShowDirections = { page = DeskPage.Main },
-                        )
-                    }
-                    DeskLayout.Lyrics -> {
-                        // Keep showing the last song while the page fades out.
-                        val playing = nowPlaying
-                        if (playing != null) {
-                            LyricsPage(
-                                nowPlaying = playing,
-                                time = headerTime,
-                                nav = nav,
-                                lyricsEnabled = showLyrics,
-                                // The controls bar sits where the card does; show one at a time.
-                                showLyricsPrompt = showLyricsPrompt && !controlsVisible,
-                                onEnableLyrics = { scope.launch { settings.setShowLyrics(true) } },
-                                onDismissLyricsPrompt = { scope.launch { settings.setLyricsPromptDismissed(true) } },
-                                onTap = { controlsVisible = !controlsVisible },
-                                onOpenApp = { activity?.let(media::openPlayerApp) },
+                        DeskLayout.Clock -> {
+                            FullLayout(
+                                currentFace, time, date, battery, nowPlaying, nav, prompt, headsetSlot,
+                                onShowPlayer = { page = DeskPage.Main },
                                 onShowDirections = { page = DeskPage.Main },
                             )
+                        }
+                        DeskLayout.Lyrics -> {
+                            // Keep showing the last song while the page fades out.
+                            val playing = nowPlaying
+                            if (playing != null) {
+                                LyricsPage(
+                                    nowPlaying = playing,
+                                    time = headerTime,
+                                    nav = nav,
+                                    lyricsEnabled = showLyrics,
+                                    // The controls bar sits where the card does; show one at a time.
+                                    showLyricsPrompt = showLyricsPrompt && !controlsVisible,
+                                    onEnableLyrics = { scope.launch { settings.setShowLyrics(true) } },
+                                    onDismissLyricsPrompt = { scope.launch { settings.setLyricsPromptDismissed(true) } },
+                                    onTap = { controlsVisible = !controlsVisible },
+                                    onOpenApp = { activity?.let(media::openPlayerApp) },
+                                    onShowDirections = { page = DeskPage.Main },
+                                )
+                            }
                         }
                     }
                 }

@@ -21,12 +21,15 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.displayCutout
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -173,58 +176,61 @@ fun LyricsPage(
             }
         }
 
-        Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 24.dp)) {
-            Header(nowPlaying, time, if (synced != null) "LYRICS" else null, colors.accent)
-            AnimatedVisibility(scrubVisible, enter = fadeIn(), exit = fadeOut()) {
-                SongPosition(nowPlaying, colors.accent, Modifier.padding(top = 14.dp))
+        // Words and controls keep clear of the camera cutout; the picture behind runs edge to edge.
+        Box(Modifier.matchParentSize().windowInsetsPadding(WindowInsets.displayCutout)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 32.dp, vertical = 24.dp)) {
+                Header(nowPlaying, time, if (synced != null) "LYRICS" else null, colors.accent)
+                AnimatedVisibility(scrubVisible, enter = fadeIn(), exit = fadeOut()) {
+                    SongPosition(nowPlaying, colors.accent, Modifier.padding(top = 14.dp))
+                }
             }
-        }
 
-        if (nav != null) {
-            DirectionsPill(
-                nav,
-                onClick = onShowDirections,
-                modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp).widthIn(max = 320.dp),
-            )
-        }
-
-        val introLeft = wait?.takeIf { it.kind == LyricsWait.Kind.Intro }?.untilNextMs?.takeIf { it > INTRO_COUNTDOWN_MIN_MS }
-        val status = when {
-            showLyricsPrompt -> null
-            introLeft != null -> "Lyrics in ${formatTrackTime(introLeft + 999)}"
-            result == LyricsResult.Instrumental -> "Instrumental"
-            lyricsEnabled && result == LyricsResult.NotFound -> "No lyrics found for this song"
-            lyricsEnabled && result == LyricsResult.Unavailable -> "Couldn't reach the lyrics service"
-            else -> null
-        }
-        // The countdown stays while it counts; anything else is said once, then fades away.
-        val lingers = status != null && introLeft == null
-        var statusShown by remember { mutableStateOf(true) }
-        LaunchedEffect(status.takeIf { lingers }, request) {
-            statusShown = true
-            if (lingers) {
-                delay(STATUS_VISIBLE_MS)
-                statusShown = false
+            if (nav != null) {
+                DirectionsPill(
+                    nav,
+                    onClick = onShowDirections,
+                    modifier = Modifier.align(Alignment.TopCenter).padding(top = 20.dp).widthIn(max = 320.dp),
+                )
             }
-        }
-        val lastStatus = remember { arrayOf("") }
-        if (status != null) lastStatus[0] = status
-        AnimatedVisibility(
-            status != null && (statusShown || !lingers),
-            enter = fadeIn(),
-            exit = fadeOut(tween(STATUS_FADE_MS)),
-            modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
-        ) {
-            Text(lastStatus[0], color = Muted, fontSize = 13.sp)
-        }
 
-        AnimatedVisibility(
-            showLyricsPrompt,
-            enter = fadeIn(),
-            exit = fadeOut(),
-            modifier = Modifier.align(Alignment.BottomStart).padding(start = 32.dp, bottom = 24.dp),
-        ) {
-            LyricsPrompt(onShow = onEnableLyrics, onNotNow = onDismissLyricsPrompt)
+            val introLeft = wait?.takeIf { it.kind == LyricsWait.Kind.Intro }?.untilNextMs?.takeIf { it > INTRO_COUNTDOWN_MIN_MS }
+            val status = when {
+                showLyricsPrompt -> null
+                introLeft != null -> "Lyrics in ${formatTrackTime(introLeft + 999)}"
+                result == LyricsResult.Instrumental -> "Instrumental"
+                lyricsEnabled && result == LyricsResult.NotFound -> "No lyrics found for this song"
+                lyricsEnabled && result == LyricsResult.Unavailable -> "Couldn't reach the lyrics service"
+                else -> null
+            }
+            // The countdown stays while it counts; anything else is said once, then fades away.
+            val lingers = status != null && introLeft == null
+            var statusShown by remember { mutableStateOf(true) }
+            LaunchedEffect(status.takeIf { lingers }, request) {
+                statusShown = true
+                if (lingers) {
+                    delay(STATUS_VISIBLE_MS)
+                    statusShown = false
+                }
+            }
+            val lastStatus = remember { arrayOf("") }
+            if (status != null) lastStatus[0] = status
+            AnimatedVisibility(
+                status != null && (statusShown || !lingers),
+                enter = fadeIn(),
+                exit = fadeOut(tween(STATUS_FADE_MS)),
+                modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 24.dp),
+            ) {
+                Text(lastStatus[0], color = Muted, fontSize = 13.sp)
+            }
+
+            AnimatedVisibility(
+                showLyricsPrompt,
+                enter = fadeIn(),
+                exit = fadeOut(),
+                modifier = Modifier.align(Alignment.BottomStart).padding(start = 32.dp, bottom = 24.dp),
+            ) {
+                LyricsPrompt(onShow = onEnableLyrics, onNotNow = onDismissLyricsPrompt)
+            }
         }
     }
 }
