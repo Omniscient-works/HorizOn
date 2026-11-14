@@ -19,13 +19,18 @@ import androidx.compose.ui.graphics.toArgb
  * middle to the arm colours further out. Everything outside the disc is fully transparent, so the
  * black around it stays true OLED black.
  *
- * Drawn in two halves like the stars: the far half behind the planet, the near half in front.
+ * Seen through the galaxy's camera with perspective and sampled at three heights through the disc,
+ * so the clouds have depth. Drawn in two halves like the stars: the far half behind the planet, the
+ * near half in front.
  */
 private const val CLOUDS_AGSL = """
 uniform float2 centre;
 uniform float radius;
 uniform float inner;
-uniform float tilt;
+uniform float sinE;
+uniform float cosE;
+uniform float camDist;
+uniform float thick;
 uniform float spin;
 uniform float time;
 uniform float beat;
@@ -80,29 +85,48 @@ float density(float2 q) {
 }
 
 half4 main(float2 p) {
-    float2 q = p - centre;
-    q.y /= tilt;
-    float r = length(q);
-    if (r > radius * 1.1) return half4(0.0);
-    // Far half (side -1) or near half (+1), blended softly across the middle line.
-    float k = radius * 0.04;
-    float mask = side > 0.0 ? smoothstep(-k, k, q.y) : 1.0 - smoothstep(-k, k, q.y);
-    if (mask <= 0.001) return half4(0.0);
-
-    float d = density(q);
-    if (d <= 0.002) return half4(0.0);
-    // Light from the core: brighter where the cloud thins toward it, shadowed behind its bulk.
-    float2 toCore = r > 1.0 ? -q / r : float2(0.0, 0.0);
-    float dNear = density(q + toCore * radius * 0.06);
-    float lit = clamp(0.55 + (d - dNear) * 3.5, 0.15, 1.4);
-
-    float rn = clamp((r - inner) / max(radius - inner, 1.0), 0.0, 1.0);
-    float3 base = mix(float3(armColour), float3(rimColour), smoothstep(0.35, 1.0, rn));
-    float3 colour = mix(base, float3(coreColour), exp(-rn * 3.0) * 0.8);
-    // Scattered light: the core glows through the near side of the clouds.
-    colour *= 0.5 + 0.75 * lit;
-    float alpha = clamp(d * (0.68 + 0.25 * beat) * mask, 0.0, 0.85);
-    return half4(half3(colour * alpha), half(alpha));
+    // Undo the camera: for each of three heights through the disc, find where the ray through this
+    // pixel crosses that slice, and how thick the cloud is there. Compositing the slices front to
+    // back gives the clouds real depth: they shift against each other as the camera sways.
+    float sx = p.x - centre.x;
+    float Y = centre.y - p.y;
+    float denom = camDist * sinE - Y * cosE;
+    if (denom <= 1.0) return half4(0.0);
+    float k = radius * 0.05;
+    float3 colour = float3(0.0);
+    float alpha = 0.0;
+    float lit = 1.0;
+    for (int i = 0; i < 3; i++) {
+        float h = (1.0 - float(i)) * thick * 0.7; // near slice (higher) first
+        float z = (Y * (camDist - h * sinE) - h * camDist * cosE) / denom;
+        float depth = z * cosE - h * sinE;
+        float f = camDist / (camDist + depth);
+        float2 q = float2(sx / f, -z);
+        float r = length(q);
+        if (r > radius * 1.1) continue;
+        // Far half (side -1, behind the planet) or near half (+1), blended across the middle.
+        float mask = side > 0.0 ? 1.0 - smoothstep(-k, k, depth) : smoothstep(-k, k, depth);
+        if (mask <= 0.001) continue;
+        float rn = clamp((r - inner) / max(radius - inner, 1.0), 0.0, 1.0);
+        // The disc is thicker at the core (the bulge): a slice off the plane holds less cloud.
+        float t = thick * (0.35 + exp(-rn * 4.5));
+        float w = exp(-(h * h) / (t * t));
+        float d = density(q) * w;
+        if (d <= 0.002) continue;
+        if (i == 1) {
+            // Light from the core: brighter where the cloud thins toward it, shadowed behind its bulk.
+            float2 toCore = r > 1.0 ? -q / r : float2(0.0, 0.0);
+            float dNear = density(q + toCore * radius * 0.06);
+            lit = clamp(0.55 + (d - dNear) * 3.5, 0.15, 1.4);
+        }
+        float3 base = mix(float3(armColour), float3(rimColour), smoothstep(0.35, 1.0, rn));
+        float3 c = mix(base, float3(coreColour), exp(-rn * 3.0) * 0.8) * (0.5 + 0.75 * lit);
+        // Nearer slices a touch brighter, like the stars.
+        float a = clamp(d * (0.62 + 0.18 * beat) * mask * clamp(f * f, 0.5, 1.3), 0.0, 0.7);
+        colour += (1.0 - alpha) * c * a;
+        alpha += (1.0 - alpha) * a;
+    }
+    return half4(half3(colour), half(min(alpha, 0.85)));
 }
 """
 
@@ -123,10 +147,9 @@ internal class GalaxyClouds private constructor(private val shader: Any) {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     fun draw(
         scope: DrawScope,
-        centre: Offset,
+        cam: GalaxyCamera,
         radius: Float,
         inner: Float,
-        tilt: Float,
         spin: Float,
         time: Float,
         beat: Float,
@@ -135,7 +158,7 @@ internal class GalaxyClouds private constructor(private val shader: Any) {
     ): Boolean {
         if (failed) return false
         try {
-            drawOrThrow(scope, centre, radius, inner, tilt, spin, time, beat, palette, front)
+            drawOrThrow(scope, cam, radius, inner, spin, time, beat, palette, front)
         } catch (_: IllegalArgumentException) {
             failed = true
         }
@@ -145,10 +168,9 @@ internal class GalaxyClouds private constructor(private val shader: Any) {
     @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private fun drawOrThrow(
         scope: DrawScope,
-        centre: Offset,
+        cam: GalaxyCamera,
         radius: Float,
         inner: Float,
-        tilt: Float,
         spin: Float,
         time: Float,
         beat: Float,
@@ -156,10 +178,14 @@ internal class GalaxyClouds private constructor(private val shader: Any) {
         front: Boolean,
     ) {
         val s = shader as RuntimeShader
+        val centre = cam.centre
         s.setFloatUniform("centre", centre.x, centre.y)
         s.setFloatUniform("radius", radius)
         s.setFloatUniform("inner", inner)
-        s.setFloatUniform("tilt", tilt)
+        s.setFloatUniform("sinE", cam.sinE)
+        s.setFloatUniform("cosE", cam.cosE)
+        s.setFloatUniform("camDist", cam.dist)
+        s.setFloatUniform("thick", radius * 0.1f)
         s.setFloatUniform("spin", spin)
         s.setFloatUniform("time", time)
         s.setFloatUniform("beat", beat)
@@ -167,8 +193,15 @@ internal class GalaxyClouds private constructor(private val shader: Any) {
         s.setColorUniform("coreColour", palette[0].toArgb())
         s.setColorUniform("armColour", palette[2].toArgb())
         s.setColorUniform("rimColour", palette[3].toArgb())
-        val half = radius * 1.1f
-        scope.drawRect(brush, topLeft = Offset(centre.x - half, centre.y - half * tilt), size = Size(half * 2, half * 2 * tilt))
+        // The disc's outline on screen: the far edge is the top, the near edge (wider, nearer) the bottom.
+        val edge = radius * 1.15f
+        val slab = radius * 0.1f
+        cam.project(0f, edge, slab)
+        val top = cam.sy
+        cam.project(0f, -edge, -slab)
+        val bottom = cam.sy
+        val wide = edge * cam.scale
+        scope.drawRect(brush, topLeft = Offset(centre.x - wide, top), size = Size(wide * 2, bottom - top))
     }
 
     companion object {
