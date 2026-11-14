@@ -1,6 +1,7 @@
 package dev.horizon.ui.lyrics
 
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -216,6 +217,9 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
     // 0 while settled; 0..1 during a song change.
     fun swap(now: Long): Float = if (swapAt <= 0L) 0f else ((now - swapAt) / SWAP_MS).coerceIn(0f, 1f)
 
+    // Volumetric gas clouds on Android 13+; the soft blobs below stand in on older phones.
+    val clouds = remember { GalaxyClouds.createOrNull() }
+
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
         val coverSize = min(maxWidth, maxHeight) * 0.24f
         Canvas(Modifier.matchParentSize()) {
@@ -235,7 +239,7 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val cover = coverSize.toPx()
 
             drawStarfield(stars, t, beat)
-            drawGalaxy(arms, nebulae, pal, centre, cover, t, beat, extraSpin, discScale, back = true)
+            drawGalaxy(arms, nebulae, clouds, pal, centre, cover, t, beat, extraSpin, discScale, back = true)
             // The core's light, behind the planet, flaring at the crossover.
             val flare = 1f + whirl * 1.1f
             val core = cover * (1.5f + 0.25f * beat) * flare * discScale.coerceAtLeast(0.2f)
@@ -268,7 +272,7 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val sw = swap(now)
             val whirl = whirlOf(sw)
             val pal = lerpPalette(fromPalette, newPalette, smoothstep(0.42f, 0.62f, sw))
-            drawGalaxy(arms, nebulae, pal, Offset(size.width / 2, size.height / 2), coverSize.toPx(), t, pulse(), whirl * 5.5f, 1f - whirl * 0.9f, back = false)
+            drawGalaxy(arms, nebulae, clouds, pal, Offset(size.width / 2, size.height / 2), coverSize.toPx(), t, pulse(), whirl * 5.5f, 1f - whirl * 0.9f, back = false)
             // The planet's atmosphere: a thin rim of light.
             val rim = coverSize.toPx() / 2f * (1f - whirl * 0.92f)
             drawCircle(pal[2].copy(alpha = 0.45f * (1f - whirl)), rim + 1.5f * density, Offset(size.width / 2, size.height / 2), style = Stroke(2f * density))
@@ -322,6 +326,7 @@ private fun DrawScope.drawStarfield(stars: List<Star>, t: Float, beat: Float) {
 private fun DrawScope.drawGalaxy(
     arms: List<ArmStar>,
     nebulae: List<Nebula>,
+    clouds: GalaxyClouds?,
     palette: List<Color>,
     centre: Offset,
     cover: Float,
@@ -334,8 +339,10 @@ private fun DrawScope.drawGalaxy(
     val radius = minOf(size.width * 0.36f, size.height * 0.82f) * discScale
     val inner = cover * 0.55f * discScale.coerceAtLeast(0.25f)
     val spin = t * 0.09f + extraSpin
-    // Soft nebula clouds first, so the stars sit in front of them.
-    for (nb in nebulae) {
+    // Gas clouds first, so the stars sit in front of them: volumetric where the phone can, else soft blobs.
+    val volumetric = clouds != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        clouds.draw(this, centre, radius, inner, TILT, spin, t, beat, palette, front = !back)
+    if (!volumetric) for (nb in nebulae) {
         val r = inner + (radius - inner) * nb.r
         val a = nb.angle + ln(1f + nb.r * 8f) * 2.9f + spin * (1.3f - 0.6f * nb.r)
         if ((sin(a) < 0f) != back) continue

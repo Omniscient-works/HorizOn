@@ -10,11 +10,15 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
@@ -53,12 +57,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLocale
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
@@ -108,6 +115,14 @@ private const val CONTROLS_TIMEOUT_MS = 4_000L
 
 /** Horizontal drag distance that switches between the player and the full clock. */
 private const val SWIPE_THRESHOLD_PX = 120f
+
+/** A flick this fast turns the page even if it moved less than the threshold (but at least the minimum). */
+private const val SWIPE_FLICK_PX_PER_S = 900f
+private const val SWIPE_FLICK_MIN_PX = 30f
+
+/** How much of the finger's movement the page follows: freely toward a page, a little toward none. */
+private const val SWIPE_FOLLOW = 0.45f
+private const val SWIPE_RUBBER_BAND = 0.12f
 
 /** How long nothing playing must last before the music is treated as gone (players pause between songs). */
 private const val MUSIC_GAP_MS = 4_000L
@@ -257,6 +272,8 @@ fun DeskScreen(onClose: () -> Unit) {
     // The page the user swiped to. Music or directions appearing bring the full clock back to
     // Main so they show; the lyrics page needs something playing or paused.
     var page by rememberSaveable { mutableStateOf(DeskPage.Main) }
+    // How far the page has been dragged by the finger, springing back to rest when let go.
+    val dragShift = remember { Animatable(0f) }
     val hasMusic = nowPlaying != null
     LaunchedEffect(hasMusic) {
         if (hasMusic && page == DeskPage.Clock) page = DeskPage.Main
@@ -303,12 +320,33 @@ fun DeskScreen(onClose: () -> Unit) {
             .background(MaterialTheme.colorScheme.background)
             .pointerInput(canShowClock, hasMusic) {
                 var dragged = 0f
+                val velocity = VelocityTracker()
+                // Whether there's a page to go to in the direction the finger is moving.
+                fun canGo(towardRight: Boolean) = when (page) {
+                    DeskPage.Clock -> towardRight
+                    DeskPage.Main -> if (towardRight) hasMusic else canShowClock
+                    DeskPage.Lyrics -> !towardRight
+                }
                 detectHorizontalDragGestures(
-                    onDragStart = { dragged = 0f },
-                    onHorizontalDrag = { _, amount -> dragged += amount },
+                    onDragStart = {
+                        dragged = 0f
+                        velocity.resetTracking()
+                        scope.launch { dragShift.stop() }
+                    },
+                    onHorizontalDrag = { change, amount ->
+                        dragged += amount
+                        velocity.addPosition(change.uptimeMillis, change.position)
+                        // The page follows the finger; with nowhere to go it only gives a little, like a rubber band.
+                        val follow = dragged * (if (canGo(dragged < 0)) SWIPE_FOLLOW else SWIPE_RUBBER_BAND)
+                        scope.launch { dragShift.snapTo(follow) }
+                    },
+                    onDragCancel = { scope.launch { dragShift.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) } },
                     onDragEnd = {
+                        // A quick flick turns the page even if it was short.
+                        val flick = abs(velocity.calculateVelocity().x) > SWIPE_FLICK_PX_PER_S
+                        scope.launch { dragShift.animateTo(0f, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) }
                         // The finger moving left brings in the page to the right, like turning a page.
-                        if (abs(dragged) > SWIPE_THRESHOLD_PX) page = if (dragged < 0) {
+                        if (abs(dragged) > SWIPE_THRESHOLD_PX || (flick && abs(dragged) > SWIPE_FLICK_MIN_PX)) page = if (dragged < 0) {
                             when (page) {
                                 DeskPage.Clock -> DeskPage.Main
                                 DeskPage.Main -> if (hasMusic) DeskPage.Lyrics else DeskPage.Main
@@ -338,7 +376,16 @@ fun DeskScreen(onClose: () -> Unit) {
                 .offset(
                     if (layout == DeskLayout.Lyrics) 0.dp else shiftX.dp,
                     if (layout == DeskLayout.Lyrics) 0.dp else shiftY.dp,
-                ),
+                )
+                // Follows the finger during a swipe, dimming and shrinking a touch as it goes.
+                .graphicsLayer {
+                    val shift = dragShift.value
+                    val f = (abs(shift) / size.width.coerceAtLeast(1f)).coerceIn(0f, 1f)
+                    translationX = shift
+                    alpha = 1f - f * 0.6f
+                    scaleX = 1f - f * 0.05f
+                    scaleY = 1f - f * 0.05f
+                },
         ) {
             // Wait for the stored face before drawing, so the wrong one never flashes up.
             val currentFace = face ?: return@Box
@@ -371,13 +418,17 @@ fun DeskScreen(onClose: () -> Unit) {
                     if (dir == 0) {
                         fadeIn(tween(PAGE_FADE_MS)) togetherWith fadeOut(tween(PAGE_FADE_MS * 2 / 3))
                     } else {
+                        // Springs rather than fixed timings, so it settles like something with weight and
+                        // carries on from wherever the finger let go.
+                        val slide = spring<IntOffset>(dampingRatio = 0.86f, stiffness = Spring.StiffnessMediumLow)
                         (
-                            fadeIn(tween(PAGE_SLIDE_MS, delayMillis = 60)) +
-                                slideInHorizontally(tween(PAGE_SLIDE_MS, easing = FastOutSlowInEasing)) { it / 7 * dir } +
-                                scaleIn(tween(PAGE_SLIDE_MS, easing = FastOutSlowInEasing), initialScale = 0.97f)
+                            fadeIn(tween(PAGE_SLIDE_MS * 2 / 3, delayMillis = 40)) +
+                                slideInHorizontally(slide) { it / 5 * dir } +
+                                scaleIn(spring(dampingRatio = 0.9f, stiffness = Spring.StiffnessMediumLow), initialScale = 0.95f)
                             ) togetherWith (
                             fadeOut(tween(PAGE_SLIDE_MS / 2)) +
-                                slideOutHorizontally(tween(PAGE_SLIDE_MS, easing = FastOutSlowInEasing)) { -it / 7 * dir }
+                                slideOutHorizontally(slide) { -it / 5 * dir } +
+                                scaleOut(tween(PAGE_SLIDE_MS, easing = FastOutSlowInEasing), targetScale = 0.95f)
                             )
                     }
                 },
@@ -464,6 +515,11 @@ fun DeskScreen(onClose: () -> Unit) {
                 }
             }
         }
+        // At 11:11 the sky has something to say, whichever page is showing.
+        WishShower(
+            visible = WishEgg.isWishMinute(now.hour, now.minute, DateFormat.is24HourFormat(context)) || WishEgg.forced(),
+            modifier = Modifier.fillMaxSize(),
+        )
         AnimatedVisibility(
             visible = bannerVisible,
             enter = fadeIn() + slideInVertically { -it },

@@ -21,6 +21,7 @@ import dev.horizon.lyrics.LyricsRepository
 import dev.horizon.lyrics.LyricsRequest
 import dev.horizon.lyrics.LyricsResult
 import dev.horizon.lyrics.LyricsSource
+import dev.horizon.ui.WishEgg
 import java.util.Locale
 
 /**
@@ -38,6 +39,8 @@ class DemoMediaActivity : Activity() {
         LyricsRepository.demo = DemoLyrics
         // Try the rare constellation without waiting for it: --ez constellation true
         if (intent.getBooleanExtra("constellation", false)) ConstellationEgg.forceNext = true
+        // Try the 11:11 shower now, for a minute: --ez wish true
+        if (intent.getBooleanExtra("wish", false)) WishEgg.forceUntil = SystemClock.elapsedRealtime() + 60_000
         DemoSession.start(applicationContext)
         startActivity(Intent(this, DeskActivity::class.java))
         finish()
