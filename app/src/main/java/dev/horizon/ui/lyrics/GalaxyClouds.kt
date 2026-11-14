@@ -31,6 +31,8 @@ uniform float sinE;
 uniform float cosE;
 uniform float camDist;
 uniform float thick;
+uniform float tx;
+uniform float ty;
 uniform float spin;
 uniform float time;
 uniform float beat;
@@ -101,7 +103,14 @@ half4 main(float2 p) {
         float z = (Y * (camDist - h * sinE) - h * camDist * cosE) / denom;
         float depth = z * cosE - h * sinE;
         float f = camDist / (camDist + depth);
-        float2 q = float2(sx / f, -z);
+        // Undo the parallax shift too: it depends on depth, so refine once from the first guess.
+        float Y2 = Y - ty * (1.0 - f);
+        float denom2 = camDist * sinE - Y2 * cosE;
+        if (denom2 <= 1.0) continue;
+        z = (Y2 * (camDist - h * sinE) - h * camDist * cosE) / denom2;
+        depth = z * cosE - h * sinE;
+        f = camDist / (camDist + depth);
+        float2 q = float2((sx - tx * (1.0 - f)) / f, -z);
         float r = length(q);
         if (r > radius * 1.1) continue;
         // Far half (side -1, behind the planet) or near half (+1), blended across the middle.
@@ -186,6 +195,8 @@ internal class GalaxyClouds private constructor(private val shader: Any) {
         s.setFloatUniform("cosE", cam.cosE)
         s.setFloatUniform("camDist", cam.dist)
         s.setFloatUniform("thick", radius * 0.1f)
+        s.setFloatUniform("tx", cam.tx)
+        s.setFloatUniform("ty", cam.ty)
         s.setFloatUniform("spin", spin)
         s.setFloatUniform("time", time)
         s.setFloatUniform("beat", beat)
@@ -200,8 +211,10 @@ internal class GalaxyClouds private constructor(private val shader: Any) {
         val top = cam.sy
         cam.project(0f, -edge, -slab)
         val bottom = cam.sy
-        val wide = edge * cam.scale
-        scope.drawRect(brush, topLeft = Offset(centre.x - wide, top), size = Size(wide * 2, bottom - top))
+        // Widened by the parallax shift, which can move the near edge past the unshifted outline.
+        val wide = edge * cam.scale + kotlin.math.abs(cam.tx)
+        val pad = kotlin.math.abs(cam.ty)
+        scope.drawRect(brush, topLeft = Offset(centre.x - wide, top - pad), size = Size(wide * 2, bottom - top + pad * 2))
     }
 
     companion object {

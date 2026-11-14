@@ -3,6 +3,7 @@ package dev.horizon.ui.lyrics
 import android.graphics.Bitmap
 import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -34,6 +35,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.min
 import androidx.palette.graphics.Palette
 import dev.horizon.media.NowPlaying
@@ -146,7 +148,14 @@ private fun paletteOf(accent: Color) =
  * much nearer things grow in [scale], and how far behind the centre the point is in [depth]
  * (positive means behind the planet). Reused for every star, so drawing allocates nothing.
  */
-internal class GalaxyCamera(val centre: Offset, elevation: Float, val dist: Float) {
+internal class GalaxyCamera(
+    val centre: Offset,
+    elevation: Float,
+    val dist: Float,
+    /** Parallax: how far the camera has moved sideways ([tx]) and up ([ty]) as the phone tilts. */
+    val tx: Float = 0f,
+    val ty: Float = 0f,
+) {
     val sinE = sin(elevation)
     val cosE = cos(elevation)
     var sx = 0f
@@ -157,13 +166,34 @@ internal class GalaxyCamera(val centre: Offset, elevation: Float, val dist: Floa
     fun project(x: Float, z: Float, h: Float) {
         depth = z * cosE - h * sinE
         scale = dist / (dist + depth)
-        sx = centre.x + x * scale
-        sy = centre.y - (z * sinE + h * cosE) * scale
+        // Moving the camera shifts each point in proportion to its depth: points in front of the
+        // centre (scale > 1) one way, points behind it the other, the centre itself not at all.
+        sx = centre.x + x * scale + tx * (1f - scale)
+        sy = centre.y - ((z * sinE + h * cosE) * scale + ty * (1f - scale))
     }
 }
 
-/** The camera's angle above the disc: about 30 degrees, swaying a few degrees either way, slowly. */
-private fun elevationAt(now: Long): Float = ((30f + 5f * sin(now / 1000f * 0.11f)) * PI / 180f).toFloat()
+/**
+ * The camera's angle above the disc: about 30 degrees, swaying a few degrees either way, slowly,
+ * and leaning a few more with the phone's tilt.
+ */
+private fun elevationAt(now: Long, tilt: Tilt): Float = ((30f + 5f * sin(now / 1000f * 0.11f) + 5f * tilt.y) * PI / 180f).toFloat()
+
+/** The camera for a canvas of this size at this moment, moved by the phone's tilt for parallax. */
+private fun cameraFor(width: Float, height: Float, now: Long, tilt: Tilt): GalaxyCamera {
+    val radius = galaxyRadius(width, height)
+    return GalaxyCamera(
+        centre = Offset(width / 2, height / 2),
+        elevation = elevationAt(now, tilt),
+        dist = radius * CAMERA_DISTANCE,
+        tx = tilt.x * radius * PARALLAX_X,
+        ty = tilt.y * radius * PARALLAX_Y,
+    )
+}
+
+/** How far the camera moves with a full tilt, in disc radii: enough to see the layers slide apart. */
+private const val PARALLAX_X = 0.4f
+private const val PARALLAX_Y = 0.25f
 
 /** How far the camera sits from the galaxy, in disc radii: closer means stronger perspective. */
 private const val CAMERA_DISTANCE = 2.6f
@@ -246,6 +276,13 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
     // 0 while settled; 0..1 during a song change.
     fun swap(now: Long): Float = if (swapAt <= 0L) 0f else ((now - swapAt) / SWAP_MS).coerceIn(0f, 1f)
 
+    // Tilting the phone moves the camera, so the layers slide apart: parallax. Off with reduce motion.
+    val context = LocalContext.current
+    val reduceMotion = remember(context) {
+        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    }
+    val tilt = rememberTilt(enabled = !reduceMotion)
+
     // Volumetric gas clouds on Android 13+; the soft blobs below stand in on older phones.
     val clouds = remember { GalaxyClouds.createOrNull() }
 
@@ -267,8 +304,7 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val centre = Offset(size.width / 2, size.height / 2)
             val cover = coverSize.toPx()
 
-            val baseRadius = galaxyRadius(size.width, size.height)
-            val cam = GalaxyCamera(centre, elevationAt(now), baseRadius * CAMERA_DISTANCE)
+            val cam = cameraFor(size.width, size.height, now, tilt)
             drawStarfield(stars, t, beat, cam)
             drawGalaxy(arms, nebulae, clouds, pal, cam, cover, t, beat, extraSpin, discScale, back = true)
             // The core's light, behind the planet, flaring at the crossover.
@@ -292,6 +328,9 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
                     scaleX = s
                     scaleY = s
                     rotationZ = whirl * 220f
+                    // A slight turn with the phone's tilt, like a ball seen from a new angle.
+                    rotationY = tilt.x * 10f
+                    rotationX = -tilt.y * 10f
                     alpha = (1f - whirl * 0.4f)
                 },
         )
@@ -303,7 +342,7 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val sw = swap(now)
             val whirl = whirlOf(sw)
             val pal = lerpPalette(fromPalette, newPalette, smoothstep(0.42f, 0.62f, sw))
-            val cam = GalaxyCamera(Offset(size.width / 2, size.height / 2), elevationAt(now), galaxyRadius(size.width, size.height) * CAMERA_DISTANCE)
+            val cam = cameraFor(size.width, size.height, now, tilt)
             drawGalaxy(arms, nebulae, clouds, pal, cam, coverSize.toPx(), t, pulse(), whirl * 5.5f, 1f - whirl * 0.9f, back = false)
             // The planet's atmosphere: a thin rim of light.
             val rim = coverSize.toPx() / 2f * (1f - whirl * 0.92f)
@@ -337,8 +376,11 @@ private fun DrawScope.drawStarfield(stars: List<Star>, t: Float, beat: Float, ca
     val sway = (cam.sinE - 0.5f) * 60f * density
     for (s in stars) {
         val speed = 0.004f + 0.02f * s.depth
-        val x = ((s.x - t * speed) % 1f + 1f) % 1f * size.width
-        val y = s.y * size.height + sway * s.depth
+        // Background stars are far behind the galaxy, so the camera's parallax shift moves them
+        // the most of anything (the farthest most), the opposite way to the galaxy's near side.
+        val far = 0.9f - 0.5f * s.depth
+        val x = ((s.x - t * speed) % 1f + 1f) % 1f * size.width + cam.tx * far
+        val y = s.y * size.height + sway * s.depth - cam.ty * far
         val twinkle = 0.55f + 0.45f * sin(t * (1.2f + s.depth * 2f) + s.phase)
         val alpha = ((0.15f + 0.6f * s.depth) * twinkle + 0.25f * beat * s.depth).coerceIn(0f, 1f)
         val color = if (s.warm) Color(0xFFFFE2B8) else Color(0xFFDCE6FF)
