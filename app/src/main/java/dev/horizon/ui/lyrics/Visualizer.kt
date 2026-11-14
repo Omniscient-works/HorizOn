@@ -1,7 +1,9 @@
 package dev.horizon.ui.lyrics
 
 import android.graphics.Bitmap
+import android.os.Build
 import android.os.SystemClock
+import android.provider.Settings
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -33,6 +35,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.min
 import androidx.palette.graphics.Palette
 import dev.horizon.media.NowPlaying
@@ -61,8 +64,6 @@ private const val ARM_STARS = 820
 /** Soft coloured nebula clouds along the disc. */
 private const val NEBULAE = 7
 
-/** How flat the galaxy's disc looks from here (1 = face on). */
-private const val TILT = 0.5f
 
 /** A shooting star crosses every this many seconds or so. */
 private const val METEOR_EVERY_S = 9f
@@ -140,11 +141,68 @@ private fun paletteFromCover(cover: List<Color>): List<Color> {
 private fun paletteOf(accent: Color) =
     listOf(accent.shiftHue(10f, 0.85f), accent.shiftHue(0f, 0.45f), accent, accent.shiftHue(-24f, 0.25f), accent.shiftHue(34f, 0.5f))
 
+/**
+ * How the galaxy is seen: a camera looking down at the disc from [elevation] (radians above its
+ * plane), [dist] from its centre, with perspective. Points on the disc are given as x (right),
+ * z (away from us) and h (up out of the plane); [project] leaves the screen point in [sx]/[sy], how
+ * much nearer things grow in [scale], and how far behind the centre the point is in [depth]
+ * (positive means behind the planet). Reused for every star, so drawing allocates nothing.
+ */
+internal class GalaxyCamera(
+    val centre: Offset,
+    elevation: Float,
+    val dist: Float,
+    /** Parallax: how far the camera has moved sideways ([tx]) and up ([ty]) as the phone tilts. */
+    val tx: Float = 0f,
+    val ty: Float = 0f,
+) {
+    val sinE = sin(elevation)
+    val cosE = cos(elevation)
+    var sx = 0f
+    var sy = 0f
+    var scale = 1f
+    var depth = 0f
+
+    fun project(x: Float, z: Float, h: Float) {
+        depth = z * cosE - h * sinE
+        scale = dist / (dist + depth)
+        // Moving the camera shifts each point in proportion to its depth: points in front of the
+        // centre (scale > 1) one way, points behind it the other, the centre itself not at all.
+        sx = centre.x + x * scale + tx * (1f - scale)
+        sy = centre.y - ((z * sinE + h * cosE) * scale + ty * (1f - scale))
+    }
+}
+
+/**
+ * The camera's angle above the disc: about 30 degrees, swaying a few degrees either way, slowly,
+ * and leaning a few more with the phone's tilt.
+ */
+private fun elevationAt(now: Long, tilt: Tilt): Float = ((30f + 5f * sin(now / 1000f * 0.11f) + 5f * tilt.y) * PI / 180f).toFloat()
+
+/** The camera for a canvas of this size at this moment, moved by the phone's tilt for parallax. */
+private fun cameraFor(width: Float, height: Float, now: Long, tilt: Tilt): GalaxyCamera {
+    val radius = galaxyRadius(width, height)
+    return GalaxyCamera(
+        centre = Offset(width / 2, height / 2),
+        elevation = elevationAt(now, tilt),
+        dist = radius * CAMERA_DISTANCE,
+        tx = tilt.x * radius * PARALLAX_X,
+        ty = tilt.y * radius * PARALLAX_Y,
+    )
+}
+
+/** How far the camera moves with a full tilt, in disc radii: enough to see the layers slide apart. */
+private const val PARALLAX_X = 0.4f
+private const val PARALLAX_Y = 0.25f
+
+/** How far the camera sits from the galaxy, in disc radii: closer means stronger perspective. */
+private const val CAMERA_DISTANCE = 2.6f
+
 /** A background star: where it sits (0..1), how deep (0 far .. 1 near), its twinkle, and the rare bright one. */
 private class Star(val x: Float, val y: Float, val depth: Float, val phase: Float, val warm: Boolean, val bright: Boolean)
 
 /** A star in the galaxy: its distance from the core (0..1), angle, colour band, and whether it's loose fill. */
-private class ArmStar(val r: Float, val angle: Float, val size: Float, val band: Int, val phase: Float, val loose: Boolean)
+private class ArmStar(val r: Float, val angle: Float, val size: Float, val band: Int, val phase: Float, val loose: Boolean, val h: Float)
 
 /** A soft colour cloud sitting on the disc at radius [r] and angle, carried round with the arms. */
 private class Nebula(val r: Float, val angle: Float, val size: Float, val band: Int)
@@ -202,7 +260,9 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val scatter = if (loose) r.nextFloat() * 6.28f else (r.nextFloat() - 0.5f) * r.nextFloat() * (1.1f - 0.4f * rad)
             val band = ((rad * 3.4f) + r.nextFloat() * 1.2f).toInt().coerceIn(0, 4)
             val size = if (loose) 0.4f + r.nextFloat() * 0.8f else 0.5f + r.nextFloat() * 1.2f
-            ArmStar(rad, arm + scatter, size, band, r.nextFloat() * 6.28f, loose)
+            // Height above or below the disc's plane, roughly bell-shaped, so the disc has thickness.
+            val h = (r.nextFloat() + r.nextFloat() + r.nextFloat() - 1.5f) / 1.5f
+            ArmStar(rad, arm + scatter, size, band, r.nextFloat() * 6.28f, loose, h)
         }
     }
     val nebulae = remember(seed) {
@@ -215,6 +275,16 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
     fun pulse(): Float = beatPulse(track.positionAt(SystemClock.elapsedRealtime()) / 1000f, track.isPlaying)
     // 0 while settled; 0..1 during a song change.
     fun swap(now: Long): Float = if (swapAt <= 0L) 0f else ((now - swapAt) / SWAP_MS).coerceIn(0f, 1f)
+
+    // Tilting the phone moves the camera, so the layers slide apart: parallax. Off with reduce motion.
+    val context = LocalContext.current
+    val reduceMotion = remember(context) {
+        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+    }
+    val tilt = rememberTilt(enabled = !reduceMotion)
+
+    // Volumetric gas clouds on Android 13+; the soft blobs below stand in on older phones.
+    val clouds = remember { GalaxyClouds.createOrNull() }
 
     BoxWithConstraints(modifier, contentAlignment = Alignment.Center) {
         val coverSize = min(maxWidth, maxHeight) * 0.24f
@@ -234,8 +304,9 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val centre = Offset(size.width / 2, size.height / 2)
             val cover = coverSize.toPx()
 
-            drawStarfield(stars, t, beat)
-            drawGalaxy(arms, nebulae, pal, centre, cover, t, beat, extraSpin, discScale, back = true)
+            val cam = cameraFor(size.width, size.height, now, tilt)
+            drawStarfield(stars, t, beat, cam)
+            drawGalaxy(arms, nebulae, clouds, pal, cam, cover, t, beat, extraSpin, discScale, back = true)
             // The core's light, behind the planet, flaring at the crossover.
             val flare = 1f + whirl * 1.1f
             val core = cover * (1.5f + 0.25f * beat) * flare * discScale.coerceAtLeast(0.2f)
@@ -257,6 +328,9 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
                     scaleX = s
                     scaleY = s
                     rotationZ = whirl * 220f
+                    // A slight turn with the phone's tilt, like a ball seen from a new angle.
+                    rotationY = tilt.x * 10f
+                    rotationX = -tilt.y * 10f
                     alpha = (1f - whirl * 0.4f)
                 },
         )
@@ -268,7 +342,8 @@ fun Visualizer(nowPlaying: NowPlaying, accent: Color, modifier: Modifier = Modif
             val sw = swap(now)
             val whirl = whirlOf(sw)
             val pal = lerpPalette(fromPalette, newPalette, smoothstep(0.42f, 0.62f, sw))
-            drawGalaxy(arms, nebulae, pal, Offset(size.width / 2, size.height / 2), coverSize.toPx(), t, pulse(), whirl * 5.5f, 1f - whirl * 0.9f, back = false)
+            val cam = cameraFor(size.width, size.height, now, tilt)
+            drawGalaxy(arms, nebulae, clouds, pal, cam, coverSize.toPx(), t, pulse(), whirl * 5.5f, 1f - whirl * 0.9f, back = false)
             // The planet's atmosphere: a thin rim of light.
             val rim = coverSize.toPx() / 2f * (1f - whirl * 0.92f)
             drawCircle(pal[2].copy(alpha = 0.45f * (1f - whirl)), rim + 1.5f * density, Offset(size.width / 2, size.height / 2), style = Stroke(2f * density))
@@ -296,11 +371,16 @@ private fun lerpPalette(a: List<Color>, b: List<Color>, f: Float): List<Color> =
  * Stars at three depths drift slowly sideways (nearer ones faster) and twinkle, more on the beat.
  * A few bright ones get a soft cross-shaped glint.
  */
-private fun DrawScope.drawStarfield(stars: List<Star>, t: Float, beat: Float) {
+private fun DrawScope.drawStarfield(stars: List<Star>, t: Float, beat: Float, cam: GalaxyCamera) {
+    // As the camera sways, nearer stars shift more than far ones: parallax, which sells the depth.
+    val sway = (cam.sinE - 0.5f) * 60f * density
     for (s in stars) {
         val speed = 0.004f + 0.02f * s.depth
-        val x = ((s.x - t * speed) % 1f + 1f) % 1f * size.width
-        val y = s.y * size.height
+        // Background stars are far behind the galaxy, so the camera's parallax shift moves them
+        // the most of anything (the farthest most), the opposite way to the galaxy's near side.
+        val far = 0.9f - 0.5f * s.depth
+        val x = ((s.x - t * speed) % 1f + 1f) % 1f * size.width + cam.tx * far
+        val y = s.y * size.height + sway * s.depth - cam.ty * far
         val twinkle = 0.55f + 0.45f * sin(t * (1.2f + s.depth * 2f) + s.phase)
         val alpha = ((0.15f + 0.6f * s.depth) * twinkle + 0.25f * beat * s.depth).coerceIn(0f, 1f)
         val color = if (s.warm) Color(0xFFFFE2B8) else Color(0xFFDCE6FF)
@@ -319,11 +399,21 @@ private fun DrawScope.drawStarfield(stars: List<Star>, t: Float, beat: Float) {
  * before the planet, the near half after it, so the arms wrap around it. [extraSpin] whirls it on a
  * song change and [discScale] collapses it toward the core.
  */
+/** The galaxy's radius on a canvas of this size. */
+private fun galaxyRadius(width: Float, height: Float) = minOf(width * 0.36f, height * 0.82f)
+
+/**
+ * The spiral galaxy in 3D, seen through [cam]: stars sit on (and a little above and below) a
+ * tilted disc, nearer ones larger and brighter, farther ones smaller and fainter. Drawn in two
+ * passes: the far half ([back]) before the planet, the near half after it, so the arms wrap around
+ * it. [extraSpin] whirls it on a song change and [discScale] collapses it toward the core.
+ */
 private fun DrawScope.drawGalaxy(
     arms: List<ArmStar>,
     nebulae: List<Nebula>,
+    clouds: GalaxyClouds?,
     palette: List<Color>,
-    centre: Offset,
+    cam: GalaxyCamera,
     cover: Float,
     t: Float,
     beat: Float,
@@ -331,40 +421,43 @@ private fun DrawScope.drawGalaxy(
     discScale: Float,
     back: Boolean,
 ) {
-    val radius = minOf(size.width * 0.36f, size.height * 0.82f) * discScale
+    val centre = cam.centre
+    val radius = galaxyRadius(size.width, size.height) * discScale
     val inner = cover * 0.55f * discScale.coerceAtLeast(0.25f)
     val spin = t * 0.09f + extraSpin
-    // Soft nebula clouds first, so the stars sit in front of them.
-    for (nb in nebulae) {
+    // Gas clouds first, so the stars sit in front of them: volumetric where the phone can, else soft blobs.
+    val volumetric = clouds != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+        clouds.draw(this, cam, radius, inner, spin, t, beat, palette, front = !back)
+    if (!volumetric) for (nb in nebulae) {
         val r = inner + (radius - inner) * nb.r
         val a = nb.angle + ln(1f + nb.r * 8f) * 2.9f + spin * (1.3f - 0.6f * nb.r)
-        if ((sin(a) < 0f) != back) continue
-        val p = centre + Offset(cos(a) * r, sin(a) * r * TILT)
-        val blob = nb.size * cover * (0.9f + 0.2f * beat)
+        cam.project(cos(a) * r, -sin(a) * r, 0f)
+        if ((cam.depth > 0f) != back) continue
+        val p = Offset(cam.sx, cam.sy)
+        val blob = nb.size * cover * (0.9f + 0.2f * beat) * cam.scale
         drawCircle(Brush.radialGradient(listOf(palette[nb.band].copy(alpha = 0.07f + 0.04f * beat), Color.Transparent), p, blob), blob, p)
     }
     for (s in arms) {
         // A logarithmic spiral: farther stars trail further behind as the galaxy turns.
         val r = inner + (radius - inner) * s.r
         val a = s.angle + ln(1f + s.r * 8f) * 2.9f + spin * (1.3f - 0.6f * s.r)
-        val sinA = sin(a)
-        if ((sinA < 0f) != back) continue
-        val p = centre + Offset(cos(a) * r, sinA * r * TILT)
-        // The far side is dimmer and a touch smaller, which sells the depth.
-        val depth = if (back) 0.65f else 1f
+        // Thicker toward the core (the bulge), thin at the rim; loose stars wander further from the plane.
+        val thickness = radius * (0.03f + 0.11f * exp(-s.r * 4.5f)) * (if (s.loose) 1.6f else 1f)
+        cam.project(cos(a) * r, -sin(a) * r, s.h * thickness)
+        if ((cam.depth > 0f) != back) continue
+        // Nearer stars are bigger and brighter: perspective, plus a little extra for depth.
+        val near = cam.scale.pow(1.5f).coerceAtMost(1.5f)
         val twinkle = 0.6f + 0.4f * sin(t * 1.7f + s.phase)
-        val alpha = (0.85f - 0.45f * s.r) * twinkle * depth * (if (s.loose) 0.45f else 1f) + 0.3f * beat * (1f - s.r)
+        val alpha = ((0.85f - 0.45f * s.r) * twinkle * (if (s.loose) 0.45f else 1f) + 0.3f * beat * (1f - s.r)) * near.coerceIn(0.45f, 1.3f)
         // Each star drifts slowly between its colour and the next, so the galaxy's colours move.
         val drift = 0.5f + 0.5f * sin(t * 0.08f + s.phase * 1.3f)
         val colour = lerp(palette[s.band], palette[(s.band + 1).coerceAtMost(palette.size - 1)], drift * 0.7f)
-        drawCircle(colour.copy(alpha = alpha.coerceIn(0f, 1f)), s.size * density * (0.8f + 0.2f * depth) * (1f + 0.25f * beat), p)
+        drawCircle(colour.copy(alpha = alpha.coerceIn(0f, 1f)), s.size * density * near * (1f + 0.25f * beat), Offset(cam.sx, cam.sy))
     }
-    // A faint glow along the disc. Drawn as a circle squashed by the tilt, so the gradient itself is
-    // elliptical and fades to true black at the edge all round (a circular gradient in an oval left
-    // a visible rim top and bottom). Kept faint: on an OLED screen every lit pixel counts.
+    // A faint glow along the disc, squashed to the disc's tilt so it fades to true black all round.
     if (back) {
         val glow = radius * 0.9f
-        scale(scaleX = 1f, scaleY = TILT, pivot = centre) {
+        scale(scaleX = 1f, scaleY = cam.sinE, pivot = centre) {
             drawCircle(
                 Brush.radialGradient(
                     0f to palette[2].copy(alpha = 0.07f + 0.04f * beat),
@@ -408,13 +501,33 @@ private fun Planet(art: Bitmap?, accent: Color, modifier: Modifier) {
         val image = remember(art) { art.asImageBitmap() }
         Box(modifier, contentAlignment = Alignment.Center) {
             Image(image, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.matchParentSize().clip(CircleShape).artOutline(CircleShape))
-            // Night side: the planet is lit from the upper left.
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .clip(CircleShape)
-                    .background(Brush.linearGradient(listOf(Color.Transparent, Color.Transparent, Color.Black.copy(alpha = 0.55f)))),
-            )
+            // Shade it as a sphere lit from the upper left: a night side falling away to the lower
+            // right, a soft highlight where the light hits, and a rim of atmosphere around the edge.
+            Canvas(Modifier.matchParentSize().clip(CircleShape)) {
+                val c = Offset(size.width / 2, size.height / 2)
+                val r = size.width / 2
+                drawCircle(
+                    Brush.radialGradient(
+                        0f to Color.Transparent,
+                        0.55f to Color.Black.copy(alpha = 0.15f),
+                        1f to Color.Black.copy(alpha = 0.7f),
+                        center = Offset(size.width * 0.36f, size.height * 0.32f),
+                        radius = r * 1.75f,
+                    ),
+                    r,
+                    c,
+                )
+                drawCircle(
+                    Brush.radialGradient(listOf(Color.White.copy(alpha = 0.32f), Color.Transparent), Offset(size.width * 0.33f, size.height * 0.28f), r * 0.55f),
+                    r,
+                    c,
+                )
+                drawCircle(
+                    Brush.radialGradient(0.78f to Color.Transparent, 1f to accent.copy(alpha = 0.55f), center = c, radius = r),
+                    r,
+                    c,
+                )
+            }
         }
     } else {
         Box(
