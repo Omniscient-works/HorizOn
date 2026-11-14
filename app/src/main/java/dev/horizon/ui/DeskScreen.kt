@@ -127,6 +127,9 @@ private const val SWIPE_RUBBER_BAND = 0.12f
 /** How long nothing playing must last before the music is treated as gone (players pause between songs). */
 private const val MUSIC_GAP_MS = 4_000L
 
+/** After a tour step's gesture works, how long before the next card. */
+private const val TOUR_STEP_PAUSE_MS = 450L
+
 /** How long the "headphones connected" banner stays up. */
 private const val HEADSET_BANNER_MS = 4_000L
 
@@ -296,7 +299,25 @@ fun DeskScreen(onClose: () -> Unit) {
     val showLyricsPrompt = LyricsRepository.online && !showLyrics && !lyricsPromptDismissed
     val headerTime = DateFormat.getTimeFormat(context).format(Date.from(now.toInstant())).uppercase(locale)
 
+    // The first-launch tour: each step asks for a gesture and moves on once it's been done.
+    // Starts as "done" until the stored value loads, so it never flashes up for people who've seen it.
+    val tourDone by settings.tourDone.collectAsStateWithLifecycle(initialValue = true)
+    var tourStep by rememberSaveable { mutableStateOf(TourStep.Lyrics) }
+
     var controlsVisible by rememberSaveable { mutableStateOf(false) }
+    val tourScreen = TourScreen(
+        onLyrics = layout == DeskLayout.Lyrics,
+        onClock = layout == DeskLayout.Clock && page == DeskPage.Clock,
+        controlsOpen = controlsVisible,
+        hasMusic = hasMusic,
+        canShowClock = canShowClock,
+    )
+    LaunchedEffect(tourDone, tourStep, tourScreen) {
+        if (!tourDone && Tour.isDone(tourStep, tourScreen)) {
+            delay(TOUR_STEP_PAUSE_MS) // A beat to see the gesture worked before the next card.
+            tourStep = Tour.next(tourStep, tourScreen)
+        }
+    }
     // Bumped on every interaction with the controls, restarting the hide timer.
     var controlsTouch by remember { mutableIntStateOf(0) }
     LaunchedEffect(controlsVisible, controlsTouch) {
@@ -515,6 +536,16 @@ fun DeskScreen(onClose: () -> Unit) {
                 }
             }
         }
+        // Only after the clock face has loaded, so the tour appears over a finished screen.
+        if (!tourDone && face != null) {
+            TourOverlay(
+                step = tourStep,
+                hasMusic = hasMusic,
+                lyricsOnline = LyricsRepository.online,
+                onNext = { tourStep = Tour.next(tourStep, tourScreen) },
+                onSkip = { scope.launch { settings.setTourDone(true) } },
+            )
+        }
         // At 11:11 the sky has something to say, whichever page is showing.
         WishShower(
             visible = WishEgg.isWishMinute(now.hour, now.minute, DateFormat.is24HourFormat(context)) || WishEgg.forced(),
@@ -565,6 +596,12 @@ fun DeskScreen(onClose: () -> Unit) {
                 onToggleLyrics = {
                     controlsTouch++
                     scope.launch { settings.setShowLyrics(!showLyrics) }
+                },
+                onTour = {
+                    controlsVisible = false
+                    page = DeskPage.Main
+                    tourStep = TourStep.Lyrics
+                    scope.launch { settings.setTourDone(false) }
                 },
                 onClose = onClose,
             )
@@ -672,6 +709,7 @@ private fun ControlsBar(
     onToggleDirections: () -> Unit,
     lyricsOn: Boolean?,
     onToggleLyrics: () -> Unit,
+    onTour: () -> Unit,
     onClose: () -> Unit,
 ) {
     val pill = RoundedCornerShape(50)
@@ -731,6 +769,9 @@ private fun ControlsBar(
                     fontSize = 15.sp,
                 )
             }
+        }
+        TextButton(onClick = onTour, shape = pill, modifier = Modifier.background(PillSurface, pill)) {
+            Text("?  Tour", color = Muted, fontSize = 15.sp)
         }
         TextButton(onClick = onClose, shape = pill, modifier = Modifier.background(PillSurface, pill)) {
             Text("✕  Close", color = Paper, fontSize = 15.sp)

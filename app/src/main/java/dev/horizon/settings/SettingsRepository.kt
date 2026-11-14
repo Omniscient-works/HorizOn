@@ -78,11 +78,19 @@ class SettingsRepository(context: Context) {
         store.edit { it[LYRICS_PROMPT_DISMISSED] = dismissed }
     }
 
+    /** Whether the user has finished or skipped the first-launch tour of the gestures. */
+    val tourDone: Flow<Boolean> = store.data.map { it[TOUR_DONE] ?: false }
+
+    suspend fun setTourDone(done: Boolean) {
+        store.edit { it[TOUR_DONE] = done }
+    }
+
     private companion object {        val CLOCK_FACE = stringPreferencesKey("clock_face")
         val MUSIC_PROMPT_DISMISSED = booleanPreferencesKey("music_prompt_dismissed")
         val SHOW_NAVIGATION = booleanPreferencesKey("show_navigation")
         val NAV_PROMPT_DISMISSED = booleanPreferencesKey("nav_prompt_dismissed")
         val SHOW_LYRICS = booleanPreferencesKey("show_lyrics")
         val LYRICS_PROMPT_DISMISSED = booleanPreferencesKey("lyrics_prompt_dismissed")
+        val TOUR_DONE = booleanPreferencesKey("tour_done")
     }
 }
